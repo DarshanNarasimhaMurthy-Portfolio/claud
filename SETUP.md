@@ -128,7 +128,7 @@ Other things to know:
 >
 > These are **guesses** to check and correct on Config:
 >
-> - R1 is 2 across.
+> - R1 is 1 across (confirmed).
 > - R2 to R4 are 4 x 16, like the left.
 > - The Blocked areas are 6 across (left) and 4 across (right).
 > - The zones: L1 to L3 and R4 are Boxes, R1 is Labels and Packing, R2 is Films and Wrap, R3 is Bags.

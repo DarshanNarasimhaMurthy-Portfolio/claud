@@ -15,7 +15,7 @@
 # block (someone else's space) that cannot be clicked or filled.
 #
 # Measured: L aisles are 4 across x 16 deep. Assumed the same for R2-R4.
-# GUESSES to check: R1 (narrow) is 2 across; the Not-ours blocks are 6 and
+# R1 (narrow) is 1 across (confirmed). GUESSES to check: the Not-ours blocks are 6 and
 # 4 across; the zone for each aisle.
 
 aisles:
@@ -24,7 +24,7 @@ aisles:
   - {AisleID: L2, Side: Left,  Order: 3, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
   - {AisleID: L3, Side: Left,  Order: 4, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
   - {AisleID: XR, Side: Right, Order: 1, PalletsAcross: 4, PalletsDeep: 16, Zone: "",  GapAfter: 0, Active: Blocked}
-  - {AisleID: R1, Side: Right, Order: 2, PalletsAcross: 2, PalletsDeep: 16, Zone: LBL, GapAfter: 0, Active: "Yes"}
+  - {AisleID: R1, Side: Right, Order: 2, PalletsAcross: 1, PalletsDeep: 16, Zone: LBL, GapAfter: 0, Active: "Yes"}
   - {AisleID: R2, Side: Right, Order: 3, PalletsAcross: 4, PalletsDeep: 16, Zone: FLM, GapAfter: 0, Active: "Yes"}
   - {AisleID: R3, Side: Right, Order: 4, PalletsAcross: 4, PalletsDeep: 16, Zone: BAG, GapAfter: 0, Active: "Yes"}
   - {AisleID: R4, Side: Right, Order: 5, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
