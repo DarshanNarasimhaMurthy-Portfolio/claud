@@ -1,0 +1,45 @@
+# Consumables Floor Map (GXO Sherburn) - starting layout for build_map.py
+#
+# These values seed the Config sheet. After handover the Config sheet in the
+# workbook is the place to make changes (then press "Rebuild Layout").
+# Edit this file only if you want to regenerate the workbook from scratch.
+#
+# Orientation: fire exit at the bottom of the map, loading bay at the top.
+# Side is as seen standing with the fire exit behind you, facing the bay.
+# Order counts from the fire exit end (1 = nearest the fire exit).
+# Each aisle is drawn as PalletsAcross rows by PalletsDeep columns, with depth
+# 01 next to the main walkway and depth running out towards the wall.
+# All PalletsDeep values are placeholders (16) until measured.
+
+aisles:
+  - {AisleID: L1, Side: Left,  Order: 1, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 1, Active: "Yes"}
+  - {AisleID: R1, Side: Right, Order: 1, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 1, Active: "Yes"}
+  - {AisleID: R2, Side: Right, Order: 2, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 1, Active: "Yes"}
+  - {AisleID: R3, Side: Right, Order: 3, PalletsAcross: 4, PalletsDeep: 16, Zone: FLM, GapAfter: 1, Active: "Yes"}
+  - {AisleID: R4, Side: Right, Order: 4, PalletsAcross: 4, PalletsDeep: 16, Zone: LBL, GapAfter: 1, Active: "Yes"}
+  - {AisleID: R5, Side: Right, Order: 5, PalletsAcross: 4, PalletsDeep: 16, Zone: BAG, GapAfter: 1, Active: "Yes"}
+
+zones:
+  - {Code: BOX, Name: Boxes,              Colour: "#C8A165", Covers: "All box types"}
+  - {Code: BAG, Name: Bags,               Colour: "#4A90D9", Covers: "Packing bags"}
+  - {Code: FLM, Name: Films and Wrap,     Colour: "#2BB3A3", Covers: "Pallet wrap, pre-stretch, hand film, recyclable film, bubble wrap"}
+  - {Code: LBL, Name: Labels and Packing, Colour: "#F2B134", Covers: "Labels, void fill, tape, other loose packing material"}
+
+# Setting name: [value, note shown on the Config sheet]
+settings:
+  DefaultLowStock: [2, "Pallets. An item is flagged LOW when pallets placed is at or below this, unless the item has its own ReorderPallets."]
+  CellSizePx:      [20, "Size of one pallet square on the Map, in pixels. Reduced automatically (down to MinCellSizePx) if the map is too big for the screen."]
+  MinCellSizePx:   [14, "Smallest pallet square allowed before zoom is used instead."]
+  ScreenWidthPx:   [1860, "Usable width of the screen for the Map at 100% zoom (1920 x 1080 monitor, Excel maximised)."]
+  ScreenHeightPx:  [760, "Usable height of the screen for the Map at 100% zoom (after ribbon, formula bar and sheet tabs)."]
+  WalkwayCells:    [3, "Width of the main walkway between left and right aisles, in cells."]
+  MapLabelChars:   [4, "How many characters of the item code to show on each pallet square."]
+  ShowMapLabels:   ["Auto", "Yes, No or Auto. Auto hides item codes when squares are smaller than 16 pixels."]
+  BrandAccent:     ["#E6007E", "GXO magenta (approximate). Used for accent lines and buttons. Correct it if you have the official value."]
+  HeaderFill:      ["#000000", "Header and title bar background."]
+  HeaderText:      ["#FFFFFF", "Header and title bar text."]
+  BandGrey:        ["#F2F2F2", "Light grey used for banding and panels."]
+  NoZoneGrey:      ["#D9D9D9", "Positions that are not in any zone."]
+  NoZoneUsedGrey:  ["#A6A6A6", "Occupied positions that are not in any zone."]
+  AlertRed:        ["#FF0000", "Wrong-zone border and low-stock marker."]
+  FireExitGreen:   ["#00843D", "Fire exit label."]

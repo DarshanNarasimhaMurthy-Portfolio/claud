@@ -1,0 +1,1560 @@
+'#####################################################################
+'#
+'#  CONSUMABLES FLOOR MAP (GXO Sherburn) - MACRO CODE
+'#
+'#  This file has FOUR parts (the fourth is optional). Each part goes in a different place.
+'#  See SETUP.md for step-by-step instructions.
+'#
+'#    PART 1  ->  a new Module          (Insert > Module)     - the big one
+'#    PART 2  ->  the Map sheet         (double-click "Map" in the list)
+'#    PART 3  ->  the Locations sheet   (double-click "Locations")
+'#    PART 4  ->  ThisWorkbook          (optional)
+'#
+'#  Copy only the lines BETWEEN the "START" and "END" banners.
+'#
+'#####################################################################
+
+
+
+'=====================================================================
+'=====  PART 1 START : paste into a new Module (Insert > Module)  =====
+'=====  Optional: rename the module to FloorMap (F4, Name box)    =====
+'=====================================================================
+Option Explicit
+
+' ---- Sheet names -----------------------------------------------------
+Private Const SH_MAP As String = "Map"
+Private Const SH_LOC As String = "Locations"
+Private Const SH_ITEMS As String = "Items"
+Private Const SH_CFG As String = "Config"
+Private Const SH_LOG As String = "MoveLog"
+
+' ---- Fixed rows on the Map sheet (must match build_map.py) -----------
+Private Const ROW_TITLE As Long = 1
+Private Const ROW_INFO As Long = 2
+Private Const ROW_BUTTONS As Long = 3
+Private Const ROW_BAY As Long = 4
+Private Const ROW_AREA_TOP As Long = 6
+Private Const TITLE_PX As Long = 32
+Private Const INFO_PX As Long = 18
+Private Const BUTTONS_PX As Long = 28
+Private Const LEGEND_COLS As Long = 10
+Private Const APP_TITLE As String = "Consumables Floor Map"
+
+' ---- The pallet currently picked up (row number in tblLocations) -----
+Private mSel As Long
+
+' ---- Cached look-ups, filled by LoadCaches ---------------------------
+Private cItemCode() As String, cItemZone() As String, cItemDesc() As String
+Private cItemLow() As Boolean, cItemUpp() As Double, cItemN As Long
+Private cZoneCode() As String, cZoneName() As String, cZoneColour() As Long, cZoneN As Long
+Private cNoZone As Long, cNoZoneUsed As Long, cRed As Long, cShowLabels As Boolean
+
+' ---- Layout worked out by ComputeLayout (same rules as build_map.py) -
+Private Type AisleRec
+    id As String
+    sideCode As String
+    ord As Double
+    across As Long
+    deep As Long
+    zone As String
+    gap As Long
+End Type
+Private Type LocRec
+    id As String
+    aisle As String
+    depth As Long
+    colLetter As String
+    zone As String
+    r As Long
+    c As Long
+End Type
+Private Type LabelRec
+    r As Long
+    c0 As Long
+    c1 As Long
+    aisle As String
+    zone As String
+End Type
+Private gLocs() As LocRec, gLocN As Long
+Private gLabels() As LabelRec, gLabelN As Long
+Private gBottom As Long, gWalkStart As Long, gWalkEnd As Long, gRightStart As Long
+Private gMapLastCol As Long, gLegendCol As Long, gLastCol As Long, gFireRow As Long
+
+
+'=====================================================================
+'  SMALL HELPERS
+'=====================================================================
+Private Function MapSheet() As Worksheet
+    Set MapSheet = ThisWorkbook.Worksheets(SH_MAP)
+End Function
+
+Private Function LocT() As ListObject
+    Set LocT = ThisWorkbook.Worksheets(SH_LOC).ListObjects("tblLocations")
+End Function
+
+Private Function ItemsT() As ListObject
+    Set ItemsT = ThisWorkbook.Worksheets(SH_ITEMS).ListObjects("tblItems")
+End Function
+
+Private Function ZonesT() As ListObject
+    Set ZonesT = ThisWorkbook.Worksheets(SH_CFG).ListObjects("tblZones")
+End Function
+
+Private Function AislesT() As ListObject
+    Set AislesT = ThisWorkbook.Worksheets(SH_CFG).ListObjects("tblAisles")
+End Function
+
+Private Function LogT() As ListObject
+    Set LogT = ThisWorkbook.Worksheets(SH_LOG).ListObjects("tblMoveLog")
+End Function
+
+' Column number of a table column, by header name
+Private Function TC(lo As ListObject, ByVal colName As String) As Long
+    TC = lo.ListColumns(colName).Index
+End Function
+
+' All values of one table column as a 2-D array (1 To n, 1 To 1), even for one row
+Private Function ColValues(lo As ListObject, ByVal colName As String) As Variant
+    Dim r As Range, v As Variant
+    If lo.DataBodyRange Is Nothing Then
+        ColValues = Empty
+        Exit Function
+    End If
+    Set r = lo.ListColumns(colName).DataBodyRange
+    If r.Cells.CountLarge = 1 Then
+        ReDim v(1 To 1, 1 To 1)
+        v(1, 1) = r.Value
+    Else
+        v = r.Value
+    End If
+    ColValues = v
+End Function
+
+Private Function RowCount(lo As ListObject) As Long
+    If lo.DataBodyRange Is Nothing Then RowCount = 0 Else RowCount = lo.ListRows.Count
+End Function
+
+' Read a value from the Settings table on Config (by its defined name)
+Private Function Setting(ByVal nm As String) As Variant
+    On Error Resume Next
+    Setting = ThisWorkbook.Names(nm).RefersToRange.Value
+End Function
+
+Private Function SettingNum(ByVal nm As String, ByVal fallback As Double) As Double
+    Dim v As Variant
+    v = Setting(nm)
+    If IsNumeric(v) And Not IsEmpty(v) Then SettingNum = CDbl(v) Else SettingNum = fallback
+End Function
+
+Private Function SettingColour(ByVal nm As String, ByVal fallback As Long) As Long
+    SettingColour = HexToColour(CStr(Setting(nm)), fallback)
+End Function
+
+' "#C8A165" -> Excel colour number
+Private Function HexToColour(ByVal hexText As String, ByVal fallback As Long) As Long
+    Dim s As String
+    s = Replace(Trim$(hexText), "#", "")
+    If Len(s) <> 6 Then
+        HexToColour = fallback
+        Exit Function
+    End If
+    On Error GoTo Bad
+    HexToColour = RGB(CLng("&H" & Mid$(s, 1, 2)), CLng("&H" & Mid$(s, 3, 2)), CLng("&H" & Mid$(s, 5, 2)))
+    Exit Function
+Bad:
+    HexToColour = fallback
+End Function
+
+Private Function IsDark(ByVal c As Long) As Boolean
+    Dim r As Long, g As Long, b As Long
+    r = c And &HFF&
+    g = (c \ &H100&) And &HFF&
+    b = (c \ &H10000) And &HFF&
+    IsDark = (0.299 * r + 0.587 * g + 0.114 * b) < 140
+End Function
+
+Private Function ColourDistance(ByVal a As Long, ByVal b As Long) As Double
+    Dim dr As Double, dg As Double, db As Double
+    dr = (a And &HFF&) - (b And &HFF&)
+    dg = ((a \ &H100&) And &HFF&) - ((b \ &H100&) And &HFF&)
+    db = ((a \ &H10000) And &HFF&) - ((b \ &H10000) And &HFF&)
+    ColourDistance = Sqr(dr * dr + dg * dg + db * db)
+End Function
+
+' Put everything back to normal - called at the end of every macro
+Private Sub RestoreApp(ByVal calcMode As Long)
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    If calcMode <> 0 Then Application.Calculation = calcMode
+    Application.CutCopyMode = False
+End Sub
+
+' Moves the cursor to A1 so the same square can be clicked again
+Private Sub ParkSelection()
+    Dim ev As Boolean
+    ev = Application.EnableEvents
+    Application.EnableEvents = False
+    If ActiveSheet.Name = SH_MAP Then MapSheet.Range("A1").Select
+    Application.EnableEvents = ev
+End Sub
+
+
+'=====================================================================
+'  CACHES (items, zones, colours) - quick to rebuild, done per action
+'=====================================================================
+Private Sub LoadCaches()
+    Dim lo As ListObject, i As Long, n As Long
+    Dim vCode As Variant, vZone As Variant, vDesc As Variant, vLow As Variant, vUpp As Variant
+    Dim vZc As Variant, vZn As Variant, vCol As Variant, mode As String, px As Double
+
+    Set lo = ItemsT
+    n = RowCount(lo)
+    cItemN = n
+    If n > 0 Then
+        ReDim cItemCode(1 To n): ReDim cItemZone(1 To n): ReDim cItemDesc(1 To n)
+        ReDim cItemLow(1 To n): ReDim cItemUpp(1 To n)
+        vCode = ColValues(lo, "ItemCode"): vZone = ColValues(lo, "Zone")
+        vDesc = ColValues(lo, "Description"): vLow = ColValues(lo, "LowStock")
+        vUpp = ColValues(lo, "UnitsPerPallet")
+        For i = 1 To n
+            cItemCode(i) = Trim$(CStr(vCode(i, 1)))
+            cItemZone(i) = Trim$(CStr(vZone(i, 1)))
+            cItemDesc(i) = CStr(vDesc(i, 1))
+            If IsError(vLow(i, 1)) Then cItemLow(i) = False Else cItemLow(i) = (CStr(vLow(i, 1)) = "LOW")
+            If IsNumeric(vUpp(i, 1)) And Not IsEmpty(vUpp(i, 1)) Then cItemUpp(i) = CDbl(vUpp(i, 1)) Else cItemUpp(i) = 0
+        Next i
+    End If
+
+    Set lo = ZonesT
+    n = RowCount(lo)
+    cZoneN = n
+    If n > 0 Then
+        ReDim cZoneCode(1 To n): ReDim cZoneName(1 To n): ReDim cZoneColour(1 To n)
+        vZc = ColValues(lo, "Code"): vZn = ColValues(lo, "Name"): vCol = ColValues(lo, "Colour")
+        For i = 1 To n
+            cZoneCode(i) = Trim$(CStr(vZc(i, 1)))
+            cZoneName(i) = CStr(vZn(i, 1))
+            cZoneColour(i) = HexToColour(CStr(vCol(i, 1)), RGB(217, 217, 217))
+        Next i
+    End If
+
+    cNoZone = SettingColour("NoZoneGrey", RGB(217, 217, 217))
+    cNoZoneUsed = SettingColour("NoZoneUsedGrey", RGB(166, 166, 166))
+    cRed = SettingColour("AlertRed", RGB(255, 0, 0))
+
+    mode = LCase$(Trim$(CStr(Setting("ShowMapLabels"))))
+    px = MapSheet.Columns(2).Width / 0.75
+    cShowLabels = (mode = "yes") Or (mode <> "no" And px >= 15.5)
+End Sub
+
+Private Function ItemIndex(ByVal code As String) As Long
+    Dim i As Long
+    If code = "" Then Exit Function
+    For i = 1 To cItemN
+        If StrComp(cItemCode(i), code, vbTextCompare) = 0 Then
+            ItemIndex = i
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function ZoneIndex(ByVal code As String) As Long
+    Dim i As Long
+    If code = "" Then Exit Function
+    For i = 1 To cZoneN
+        If StrComp(cZoneCode(i), code, vbTextCompare) = 0 Then
+            ZoneIndex = i
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function ZoneLabel(ByVal code As String) As String
+    Dim z As Long
+    z = ZoneIndex(code)
+    If code = "" Then
+        ZoneLabel = "no zone"
+    ElseIf z = 0 Then
+        ZoneLabel = code
+    Else
+        ZoneLabel = code & " (" & cZoneName(z) & ")"
+    End If
+End Function
+
+Private Function ItemZoneOf(ByVal item As String) As String
+    Dim i As Long
+    i = ItemIndex(item)
+    If i > 0 Then ItemZoneOf = cItemZone(i)
+End Function
+
+' True when a pallet of this item sits in a named zone that is not its own
+Private Function IsWrongZone(ByVal item As String, ByVal locZone As String) As Boolean
+    Dim iz As String
+    If item = "" Or locZone = "" Then Exit Function
+    If ZoneIndex(locZone) = 0 Then Exit Function
+    iz = ItemZoneOf(item)
+    If iz = "" Then Exit Function
+    IsWrongZone = (StrComp(iz, locZone, vbTextCompare) <> 0)
+End Function
+
+
+'=====================================================================
+'  LOCATIONS TABLE ACCESS
+'=====================================================================
+Private Function LocVal(ByVal idx As Long, ByVal colName As String) As Variant
+    Dim lo As ListObject
+    Set lo = LocT
+    LocVal = lo.DataBodyRange.Cells(idx, TC(lo, colName)).Value
+End Function
+
+Private Function LocText(ByVal idx As Long, ByVal colName As String) As String
+    Dim v As Variant
+    v = LocVal(idx, colName)
+    If IsError(v) Then LocText = "" Else LocText = Trim$(CStr(v))
+End Function
+
+Private Sub SetLocVal(ByVal idx As Long, ByVal colName As String, ByVal v As Variant)
+    Dim lo As ListObject
+    Set lo = LocT
+    If IsEmpty(v) Then
+        lo.DataBodyRange.Cells(idx, TC(lo, colName)).ClearContents
+    ElseIf CStr(v) = "" Then
+        lo.DataBodyRange.Cells(idx, TC(lo, colName)).ClearContents
+    Else
+        lo.DataBodyRange.Cells(idx, TC(lo, colName)).Value = v
+    End If
+End Sub
+
+' Which tblLocations row is drawn at this Map cell? 0 = none
+Private Function LocationAt(ByVal r As Long, ByVal c As Long) As Long
+    Dim lo As ListObject, vr As Variant, vc As Variant, i As Long
+    Set lo = LocT
+    If RowCount(lo) = 0 Then Exit Function
+    vr = ColValues(lo, "MapRow")
+    vc = ColValues(lo, "MapCol")
+    For i = 1 To UBound(vr, 1)
+        If IsNumeric(vr(i, 1)) And IsNumeric(vc(i, 1)) Then
+            If vr(i, 1) = r And vc(i, 1) = c Then
+                LocationAt = i
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+Private Sub LogMove(ByVal item As String, ByVal fromLoc As String, ByVal toLoc As String)
+    Dim lo As ListObject, rw As Range
+    Set lo = LogT
+    If RowCount(lo) = 1 Then
+        If Application.WorksheetFunction.CountA(lo.DataBodyRange) = 0 Then Set rw = lo.DataBodyRange.Rows(1)
+    End If
+    If rw Is Nothing Then Set rw = lo.ListRows.Add.Range
+    rw.Cells(1, TC(lo, "Timestamp")).Value = Now
+    rw.Cells(1, TC(lo, "Timestamp")).NumberFormat = "dd/mm/yyyy hh:mm:ss"
+    rw.Cells(1, TC(lo, "User")).Value = Environ$("USERNAME")
+    rw.Cells(1, TC(lo, "ItemCode")).Value = item
+    rw.Cells(1, TC(lo, "FromLocation")).Value = fromLoc
+    rw.Cells(1, TC(lo, "ToLocation")).Value = toLoc
+End Sub
+
+
+'=====================================================================
+'  PAINTING
+'=====================================================================
+Private Sub SetEdges(cel As Range, ByVal weight As Long, ByVal colour As Long)
+    Dim e As Variant
+    For Each e In Array(xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight)
+        With cel.Borders(e)
+            .LineStyle = xlContinuous
+            .Weight = weight
+            .Color = colour
+        End With
+    Next e
+End Sub
+
+' Paint one pallet square from its row in tblLocations (call LoadCaches first)
+Private Sub PaintLocation(ByVal idx As Long)
+    Dim locId As String, zone As String, item As String, units As Variant
+    Dim r As Long, c As Long, z As Long, i As Long, cel As Range
+    Dim fillColour As Long, dark As Boolean, wrong As Boolean, low As Boolean, note As String
+
+    locId = LocText(idx, "LocationID")
+    zone = LocText(idx, "Zone")
+    item = LocText(idx, "ItemCode")
+    units = LocVal(idx, "UnitsOnPallet")
+    If Not IsNumeric(LocVal(idx, "MapRow")) Or Not IsNumeric(LocVal(idx, "MapCol")) Then Exit Sub
+    r = CLng(LocVal(idx, "MapRow"))
+    c = CLng(LocVal(idx, "MapCol"))
+    If r < 1 Or c < 1 Then Exit Sub
+    Set cel = MapSheet.Cells(r, c)
+    z = ZoneIndex(zone)
+
+    ' Fill: solid when occupied, stripes when free, grey outside zones
+    With cel.Interior
+        If z = 0 Then
+            .Pattern = xlPatternSolid
+            If item <> "" Then fillColour = cNoZoneUsed Else fillColour = cNoZone
+            .Color = fillColour
+            dark = IsDark(fillColour)
+        ElseIf item <> "" Then
+            .Pattern = xlPatternSolid
+            .Color = cZoneColour(z)
+            dark = IsDark(cZoneColour(z))
+        Else
+            .Pattern = xlPatternLightUp
+            .Color = vbWhite
+            .PatternColor = cZoneColour(z)
+            dark = False
+        End If
+    End With
+
+    With cel.Font
+        .Name = "Arial"
+        .Size = 7
+        .Bold = False
+        If dark Then .Color = vbWhite Else .Color = vbBlack
+    End With
+    cel.HorizontalAlignment = xlLeft
+    cel.VerticalAlignment = xlCenter
+    If cShowLabels Then cel.NumberFormat = "General" Else cel.NumberFormat = ";;;"
+
+    ' Borders: thin white grid, thick red for wrong zone, red base for low stock
+    SetEdges cel, xlThin, vbWhite
+    If item <> "" Then
+        i = ItemIndex(item)
+        wrong = IsWrongZone(item, zone)
+        If i > 0 Then low = cItemLow(i)
+        If wrong Then
+            SetEdges cel, xlThick, cRed
+        ElseIf low Then
+            With cel.Borders(xlEdgeBottom)
+                .LineStyle = xlContinuous
+                .Weight = xlThick
+                .Color = cRed
+            End With
+        End If
+    End If
+    If idx = mSel Then SetEdges cel, xlThick, vbBlack
+
+    ' Note with the full detail
+    If Not cel.Comment Is Nothing Then cel.Comment.Delete
+    If item <> "" Then
+        note = locId & vbLf & item
+        If i > 0 Then
+            If cItemDesc(i) <> "" Then note = note & " - " & cItemDesc(i)
+        Else
+            note = note & " (not on the Items sheet)"
+        End If
+        If IsNumeric(units) And Not IsEmpty(units) Then
+            note = note & vbLf & "Units: " & Format$(units, "#,##0")
+        ElseIf i > 0 Then
+            note = note & vbLf & "Units: full pallet (" & Format$(cItemUpp(i), "#,##0") & ")"
+        End If
+        note = note & vbLf & "Space: " & ZoneLabel(zone)
+        If wrong Then note = note & vbLf & "WRONG ZONE - belongs in " & ZoneLabel(ItemZoneOf(item))
+        If low Then note = note & vbLf & "LOW STOCK"
+        cel.AddComment note
+        cel.Comment.Shape.Width = 170
+        cel.Comment.Shape.Height = 80
+    End If
+End Sub
+
+' Solid zone colour when occupied, as conditional formatting.
+' This is what keeps the Map working if macros are later switched off.
+Private Sub RebuildMapFormatRules()
+    Dim ws As Worksheet, lo As ListObject, n As Long, i As Long, j As Long, k As Long
+    Dim vA As Variant, vZ As Variant, vR As Variant, vC As Variant
+    Dim aisles() As String, zoneOf() As String, r0() As Long, r1() As Long, c0() As Long, c1() As Long
+    Dim na As Long, rng As Range, fc As FormatCondition, colour As Long, z As Long
+
+    Set ws = MapSheet
+    Set lo = LocT
+    ws.Cells.FormatConditions.Delete
+    n = RowCount(lo)
+    If n = 0 Then Exit Sub
+    vA = ColValues(lo, "Aisle"): vZ = ColValues(lo, "Zone")
+    vR = ColValues(lo, "MapRow"): vC = ColValues(lo, "MapCol")
+    ReDim aisles(1 To n): ReDim zoneOf(1 To n)
+    ReDim r0(1 To n): ReDim r1(1 To n): ReDim c0(1 To n): ReDim c1(1 To n)
+    For i = 1 To n
+        If IsNumeric(vR(i, 1)) And IsNumeric(vC(i, 1)) And Not IsEmpty(vR(i, 1)) Then
+            k = 0
+            For j = 1 To na
+                If aisles(j) = CStr(vA(i, 1)) Then k = j: Exit For
+            Next j
+            If k = 0 Then
+                na = na + 1: k = na
+                aisles(k) = CStr(vA(i, 1)): zoneOf(k) = Trim$(CStr(vZ(i, 1)))
+                r0(k) = vR(i, 1): r1(k) = vR(i, 1): c0(k) = vC(i, 1): c1(k) = vC(i, 1)
+            Else
+                If vR(i, 1) < r0(k) Then r0(k) = vR(i, 1)
+                If vR(i, 1) > r1(k) Then r1(k) = vR(i, 1)
+                If vC(i, 1) < c0(k) Then c0(k) = vC(i, 1)
+                If vC(i, 1) > c1(k) Then c1(k) = vC(i, 1)
+            End If
+        End If
+    Next i
+
+    ' Relative references in rules follow the active cell, so select each block first
+    ws.Activate
+    For k = 1 To na
+        Set rng = ws.Range(ws.Cells(r0(k), c0(k)), ws.Cells(r1(k), c1(k)))
+        z = ZoneIndex(zoneOf(k))
+        If z > 0 Then colour = cZoneColour(z) Else colour = cNoZoneUsed
+        rng.Cells(1, 1).Select
+        Set fc = rng.FormatConditions.Add(Type:=xlExpression, _
+            Formula1:="=LEN(" & rng.Cells(1, 1).Address(False, False) & ")>0")
+        fc.Interior.Pattern = xlPatternSolid
+        fc.Interior.Color = colour
+        If IsDark(colour) Then fc.Font.Color = vbWhite Else fc.Font.Color = vbBlack
+    Next k
+    ParkSelection
+End Sub
+
+' Legend down the right-hand side (zones, key, live counts)
+Private Sub DrawLegend()
+    Dim ws As Worksheet, top As Range, lc As Long, r As Long, lastRow As Long, z As Long
+    Dim sample As Long, keyText As Variant, k As Long, cel As Range
+    Set ws = MapSheet
+    On Error Resume Next
+    Set top = ThisWorkbook.Names("MapLegend").RefersToRange
+    On Error GoTo 0
+    If top Is Nothing Then Exit Sub
+    lc = top.Column
+    r = top.Row
+    lastRow = ws.Range("MapArea").Row + ws.Range("MapArea").Rows.Count - 3
+    With ws.Range(ws.Cells(r, lc), ws.Cells(lastRow, lc + LEGEND_COLS - 1))
+        .UnMerge
+        .Clear
+        .ClearComments
+    End With
+
+    LegendHeader r, lc, "ZONES"
+    For z = 1 To cZoneN
+        r = r + 1
+        ws.Cells(r, lc).Interior.Color = cZoneColour(z)
+        With ws.Cells(r, lc + 1).Interior
+            .Pattern = xlPatternLightUp
+            .Color = vbWhite
+            .PatternColor = cZoneColour(z)
+        End With
+        LegendText r, lc, cZoneCode(z) & "  " & cZoneName(z)
+    Next z
+
+    If cZoneN > 0 Then sample = cZoneColour(1) Else sample = cNoZone
+    r = r + 2
+    LegendHeader r, lc, "KEY"
+    keyText = Array("Pallet in place", "Free space kept for that zone", "Not in any zone", _
+                    "Wrong zone", "Selected, being moved", "Low stock item")
+    For k = 0 To 5
+        r = r + 1
+        Set cel = ws.Cells(r, lc)
+        Select Case k
+            Case 0: cel.Interior.Color = sample
+            Case 1
+                cel.Interior.Pattern = xlPatternLightUp
+                cel.Interior.Color = vbWhite
+                cel.Interior.PatternColor = sample
+            Case 2: cel.Interior.Color = cNoZone
+            Case 3: cel.Interior.Color = sample: SetEdges cel, xlThick, cRed
+            Case 4: cel.Interior.Color = sample: SetEdges cel, xlThick, vbBlack
+            Case 5
+                cel.Interior.Color = sample
+                SetEdges cel, xlThin, vbWhite
+                With cel.Borders(xlEdgeBottom)
+                    .Weight = xlThick
+                    .Color = cRed
+                End With
+        End Select
+        LegendText r, lc, CStr(keyText(k))
+    Next k
+
+    r = r + 2
+    LegendHeader r, lc, "LIVE COUNTS"
+    LegendCount r + 1, lc, "=ROWS(tblLocations[LocationID])", "Positions"
+    LegendCount r + 2, lc, "=COUNTIF(tblLocations[ItemCode],""?*"")", "Pallets placed"
+    LegendCount r + 3, lc, "=ROWS(tblLocations[LocationID])-COUNTIF(tblLocations[ItemCode],""?*"")", "Free"
+End Sub
+
+Private Sub LegendHeader(ByVal r As Long, ByVal lc As Long, ByVal text As String)
+    Dim ws As Worksheet
+    Set ws = MapSheet
+    With ws.Range(ws.Cells(r, lc), ws.Cells(r, lc + LEGEND_COLS - 1))
+        .Merge
+        .Cells(1, 1).Value = text
+        .Font.Name = "Arial": .Font.Size = 8: .Font.Bold = True
+        .Font.Color = SettingColour("HeaderText", vbWhite)
+        .Interior.Color = SettingColour("HeaderFill", vbBlack)
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+    End With
+End Sub
+
+Private Sub LegendText(ByVal r As Long, ByVal lc As Long, ByVal text As String)
+    Dim ws As Worksheet
+    Set ws = MapSheet
+    With ws.Range(ws.Cells(r, lc + 3), ws.Cells(r, lc + LEGEND_COLS - 1))
+        .Merge
+        .Cells(1, 1).Value = text
+        .Font.Name = "Arial": .Font.Size = 8
+        .VerticalAlignment = xlCenter
+    End With
+End Sub
+
+Private Sub LegendCount(ByVal r As Long, ByVal lc As Long, ByVal formula As String, ByVal text As String)
+    Dim ws As Worksheet
+    Set ws = MapSheet
+    With ws.Range(ws.Cells(r, lc), ws.Cells(r, lc + 2))
+        .Merge
+        .Cells(1, 1).Formula = formula
+        .Font.Name = "Arial": .Font.Size = 8: .Font.Bold = True
+        .Font.Color = SettingColour("BrandAccent", RGB(230, 0, 126))
+        .HorizontalAlignment = xlRight
+        .VerticalAlignment = xlCenter
+    End With
+    LegendText r, lc, text
+End Sub
+
+' Colour the hex cells on Config so users can see what they typed
+Private Sub PaintConfigSwatches()
+    Dim cel As Range, c As Long, lo As ListObject
+    Set lo = ZonesT
+    If Not lo.DataBodyRange Is Nothing Then
+        For Each cel In lo.ListColumns("Colour").DataBodyRange.Cells
+            c = HexToColour(CStr(cel.Value), -1)
+            If c >= 0 Then
+                cel.Interior.Color = c
+                If IsDark(c) Then cel.Font.Color = vbWhite Else cel.Font.Color = vbBlack
+            End If
+        Next cel
+    End If
+    Set lo = ThisWorkbook.Worksheets(SH_CFG).ListObjects("tblSettings")
+    If Not lo.DataBodyRange Is Nothing Then
+        For Each cel In lo.ListColumns("Value").DataBodyRange.Cells
+            If Left$(CStr(cel.Value), 1) = "#" Then
+                c = HexToColour(CStr(cel.Value), -1)
+                If c >= 0 Then
+                    cel.Interior.Color = c
+                    If IsDark(c) Then cel.Font.Color = vbWhite Else cel.Font.Color = vbBlack
+                End If
+            End If
+        Next cel
+    End If
+End Sub
+
+
+'=====================================================================
+'  BUTTON: REFRESH  - full repaint from tblLocations and tblZones
+'=====================================================================
+Public Sub RefreshMap()
+    RefreshMapCore False
+End Sub
+
+Private Sub RefreshMapCore(ByVal quiet As Boolean)
+    Dim lo As ListObject, n As Long, i As Long, calcMode As Long, z As Long
+    Dim brand As Long, warn As String, prevSheet As Worksheet
+    On Error GoTo Fail
+    calcMode = Application.Calculation
+    Set prevSheet = ActiveSheet
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    Application.Calculate
+
+    LoadCaches
+    Set lo = LocT
+    n = RowCount(lo)
+    For i = 1 To n
+        PaintLocation i
+    Next i
+    RebuildMapFormatRules
+    DrawLegend
+    PaintConfigSwatches
+    prevSheet.Activate
+
+    ' Zone colours must stay clear of the magenta brand accent
+    brand = SettingColour("BrandAccent", RGB(230, 0, 126))
+    For z = 1 To cZoneN
+        If ColourDistance(cZoneColour(z), brand) < 80 Then
+            warn = warn & vbLf & "  " & cZoneCode(z) & " (" & cZoneName(z) & ")"
+        End If
+    Next z
+
+Done:
+    RestoreApp calcMode
+    If Not quiet Then
+        Application.StatusBar = "Map refreshed: " & n & " positions."
+        If warn <> "" Then MsgBox "These zone colours are too close to the magenta brand accent. " & _
+            "Pick a clearly different colour on the Config sheet:" & warn, vbExclamation, APP_TITLE
+    End If
+    Exit Sub
+Fail:
+    MsgBox "Refresh stopped: " & Err.Description, vbExclamation, APP_TITLE
+    Resume Done
+End Sub
+
+
+'=====================================================================
+'  CLICK-TO-PLACE  (called from the Map sheet's SelectionChange)
+'=====================================================================
+Public Sub HandleMapClick(ByVal Target As Range)
+    Dim idx As Long, item As String, calcMode As Long, area As Range
+    If Target.Worksheet.Name <> SH_MAP Then Exit Sub
+    If Target.CountLarge <> 1 Then Exit Sub
+    On Error Resume Next
+    Set area = MapSheet.Range("MapArea")
+    On Error GoTo Fail
+    If area Is Nothing Then Exit Sub
+    If Intersect(Target, area) Is Nothing Then Exit Sub
+    idx = LocationAt(Target.Row, Target.Column)
+    If idx = 0 Then Exit Sub                      ' walkway, label or legend - ignore
+
+    calcMode = Application.Calculation
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    ParkSelection
+    LoadCaches
+
+    If mSel = 0 Then
+        item = LocText(idx, "ItemCode")
+        If item = "" Then
+            Application.StatusBar = LocText(idx, "LocationID") & " is empty. Click a pallet first, then click where it goes."
+        Else
+            mSel = idx
+            PaintLocation idx
+            Application.OnKey "{ESC}", "CancelMove"
+            Application.StatusBar = "Moving " & item & " from " & LocText(idx, "LocationID") & _
+                ". Click an empty square to move it, or a pallet to swap. Click it again or press Esc to cancel."
+        End If
+    ElseIf idx = mSel Then
+        CancelMoveCore
+    Else
+        DoMove mSel, idx
+    End If
+
+Done:
+    RestoreApp calcMode
+    Exit Sub
+Fail:
+    MsgBox "Move stopped: " & Err.Description, vbExclamation, APP_TITLE
+    Resume Done
+End Sub
+
+' Move (destination empty) or swap (destination occupied)
+Private Sub DoMove(ByVal src As Long, ByVal dst As Long)
+    Dim srcItem As String, dstItem As String, srcUnits As Variant, dstUnits As Variant
+    Dim srcId As String, dstId As String, srcZone As String, dstZone As String, msg As String
+
+    srcId = LocText(src, "LocationID"): dstId = LocText(dst, "LocationID")
+    srcZone = LocText(src, "Zone"): dstZone = LocText(dst, "Zone")
+    srcItem = LocText(src, "ItemCode"): dstItem = LocText(dst, "ItemCode")
+    srcUnits = LocVal(src, "UnitsOnPallet"): dstUnits = LocVal(dst, "UnitsOnPallet")
+
+    ' Warn when a pallet would end up outside its own zone
+    If IsWrongZone(srcItem, dstZone) Then
+        msg = msg & srcItem & " belongs in " & ZoneLabel(ItemZoneOf(srcItem)) & _
+              ", but " & dstId & " is " & ZoneLabel(dstZone) & "." & vbLf
+    End If
+    If dstItem <> "" Then
+        If IsWrongZone(dstItem, srcZone) Then
+            msg = msg & dstItem & " belongs in " & ZoneLabel(ItemZoneOf(dstItem)) & _
+                  ", but " & srcId & " is " & ZoneLabel(srcZone) & "." & vbLf
+        End If
+    End If
+    If msg <> "" Then
+        Application.ScreenUpdating = True
+        If MsgBox(msg & vbLf & "Put it there anyway?", vbYesNo + vbExclamation + vbDefaultButton2, _
+                  "Different zone") = vbNo Then
+            CancelMoveCore
+            Exit Sub
+        End If
+        Application.ScreenUpdating = False
+    End If
+
+    SetLocVal dst, "ItemCode", srcItem
+    SetLocVal dst, "UnitsOnPallet", srcUnits
+    SetLocVal src, "ItemCode", dstItem
+    SetLocVal src, "UnitsOnPallet", dstUnits
+    LogMove srcItem, srcId, dstId
+    If dstItem <> "" Then LogMove dstItem, dstId, srcId
+
+    mSel = 0
+    Application.OnKey "{ESC}"
+    Application.Calculate
+    PaintLocation src
+    PaintLocation dst
+    If dstItem = "" Then
+        Application.StatusBar = "Moved " & srcItem & " from " & srcId & " to " & dstId & "."
+    Else
+        Application.StatusBar = "Swapped " & srcItem & " (now " & dstId & ") and " & dstItem & " (now " & srcId & ")."
+    End If
+End Sub
+
+
+'=====================================================================
+'  BUTTON: CANCEL MOVE  (also the Esc key while a pallet is picked up)
+'=====================================================================
+Public Sub CancelMove()
+    Dim calcMode As Long
+    calcMode = Application.Calculation
+    On Error GoTo Done
+    Application.EnableEvents = False
+    LoadCaches
+    CancelMoveCore
+Done:
+    RestoreApp calcMode
+End Sub
+
+Private Sub CancelMoveCore()
+    Dim old As Long
+    old = mSel
+    mSel = 0
+    Application.OnKey "{ESC}"
+    If old > 0 And old <= RowCount(LocT) Then PaintLocation old
+    Application.StatusBar = "Move cancelled."
+End Sub
+
+
+'=====================================================================
+'  BUTTON: FIND SPACE
+'=====================================================================
+Public Sub FindSpace()
+    Dim lo As ListObject, n As Long, i As Long, k As Long, calcMode As Long
+    Dim code As String, prompt As String, listText As String, qtyV As Variant, qty As Double
+    Dim ii As Long, zone As String, upp As Double, pallets As Long
+    Dim vId As Variant, vZone As Variant, vItem As Variant, vR As Variant, vD As Variant
+    Dim inZ() As Long, outZ() As Long, nIn As Long, nOut As Long, keyIn() As Double, keyOut() As Double
+    Dim useIn As Long, useOut As Long, shortBy As Long, msg As String, lastUnits As Double
+    Dim pick() As Long, nPick As Long, u As Double
+
+    calcMode = Application.Calculation
+    On Error GoTo Fail
+    LoadCaches
+    If cItemN = 0 Then
+        MsgBox "There are no items on the Items sheet yet.", vbInformation, APP_TITLE
+        GoTo Done
+    End If
+
+    ' 1. Pick the item
+    For i = 1 To cItemN
+        If cItemCode(i) <> "" Then listText = listText & cItemCode(i) & " (" & cItemZone(i) & ")   "
+        If Len(listText) > 700 Then listText = listText & "...": Exit For
+    Next i
+    If mSel > 0 Then code = LocText(mSel, "ItemCode")
+    code = Trim$(InputBox("Which item needs space? Type its item code." & vbLf & vbLf & listText, _
+                          APP_TITLE & " - Find Space", code))
+    If code = "" Then GoTo Done
+    ii = ItemIndex(code)
+    If ii = 0 Then
+        MsgBox "'" & code & "' is not on the Items sheet.", vbExclamation, APP_TITLE
+        GoTo Done
+    End If
+    code = cItemCode(ii)
+    zone = cItemZone(ii)
+    upp = cItemUpp(ii)
+    If upp <= 0 Then
+        MsgBox code & " has no UnitsPerPallet on the Items sheet, so pallets cannot be worked out.", _
+               vbExclamation, APP_TITLE
+        GoTo Done
+    End If
+
+    ' 2. How much is arriving
+    qtyV = Application.InputBox("How many units of " & code & " need a home?" & vbLf & _
+                                "(" & Format$(upp, "#,##0") & " units per pallet)", APP_TITLE & " - Find Space", _
+                                Format$(upp, "0"), Type:=1)
+    If VarType(qtyV) = vbBoolean Then GoTo Done
+    qty = CDbl(qtyV)
+    If qty <= 0 Then GoTo Done
+    pallets = -Int(-qty / upp)                       ' round up
+    lastUnits = qty - upp * (pallets - 1)
+
+    ' 3. Free positions: in the item's zone first, then everywhere else
+    Set lo = LocT
+    n = RowCount(lo)
+    vId = ColValues(lo, "LocationID"): vZone = ColValues(lo, "Zone"): vItem = ColValues(lo, "ItemCode")
+    vR = ColValues(lo, "MapRow"): vD = ColValues(lo, "Depth")
+    ReDim inZ(1 To n + 1): ReDim outZ(1 To n + 1): ReDim keyIn(1 To n + 1): ReDim keyOut(1 To n + 1)
+    For i = 1 To n
+        If Trim$(CStr(vItem(i, 1))) = "" And IsNumeric(vR(i, 1)) And IsNumeric(vD(i, 1)) Then
+            If zone <> "" And StrComp(Trim$(CStr(vZone(i, 1))), zone, vbTextCompare) = 0 Then
+                nIn = nIn + 1: inZ(nIn) = i
+                keyIn(nIn) = (vR(i, 1) + vD(i, 1)) * 1000 + vR(i, 1)     ' nearest the bay first
+            Else
+                nOut = nOut + 1: outZ(nOut) = i
+                keyOut(nOut) = (vR(i, 1) + vD(i, 1)) * 1000 + vR(i, 1)
+            End If
+        End If
+    Next i
+    SortByKey inZ, keyIn, nIn
+    SortByKey outZ, keyOut, nOut
+
+    useIn = pallets
+    If useIn > nIn Then useIn = nIn
+    shortBy = pallets - useIn
+    useOut = shortBy
+    If useOut > nOut Then useOut = nOut
+
+    msg = code & ": " & Format$(qty, "#,##0") & " units = " & pallets & " pallet" & IIf(pallets = 1, "", "s") & _
+          " (" & Format$(upp, "#,##0") & " per pallet)." & vbLf & vbLf
+    If useIn > 0 Then
+        msg = msg & "In zone " & ZoneLabel(zone) & ", nearest the bay first:" & vbLf & "   "
+        For k = 1 To useIn
+            msg = msg & CStr(vId(inZ(k), 1)) & IIf(k < useIn, ", ", "")
+            If k Mod 6 = 0 And k < useIn Then msg = msg & vbLf & "   "
+        Next k
+        msg = msg & vbLf
+    End If
+    If shortBy > 0 Then
+        If nIn = 0 Then
+            msg = msg & "Zone " & ZoneLabel(zone) & " is FULL." & vbLf
+        Else
+            msg = msg & "Zone " & ZoneLabel(zone) & " only has " & nIn & " free." & vbLf
+        End If
+        If useOut > 0 Then
+            msg = msg & vbLf & "Free space in OTHER zones (OUT OF ZONE):" & vbLf
+            For k = 1 To useOut
+                msg = msg & "   " & CStr(vId(outZ(k), 1)) & "  - " & ZoneLabel(Trim$(CStr(vZone(outZ(k), 1)))) & _
+                      "  OUT OF ZONE" & vbLf
+                If k >= 15 And useOut > 16 Then
+                    msg = msg & "   ... and " & (useOut - k) & " more" & vbLf
+                    Exit For
+                End If
+            Next k
+        End If
+        If shortBy > useOut Then
+            msg = msg & vbLf & "Not enough free space anywhere: " & (shortBy - useOut) & _
+                  " pallet" & IIf(shortBy - useOut = 1, "", "s") & " cannot be placed." & vbLf
+        End If
+    End If
+    If useIn + useOut = 0 Then
+        MsgBox msg, vbExclamation, APP_TITLE & " - Find Space"
+        GoTo Done
+    End If
+    If MsgBox(msg & vbLf & "Place " & (useIn + useOut) & " pallet" & IIf(useIn + useOut = 1, "", "s") & _
+              " of " & code & " in these positions now?", vbYesNo + vbQuestion, APP_TITLE & " - Find Space") = vbNo Then
+        GoTo Done
+    End If
+
+    ' 4. Fill them (last pallet gets the part-pallet quantity)
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    nPick = useIn + useOut
+    ReDim pick(1 To nPick)
+    For k = 1 To useIn: pick(k) = inZ(k): Next k
+    For k = 1 To useOut: pick(useIn + k) = outZ(k): Next k
+    For k = 1 To nPick
+        If k = pallets Then u = lastUnits Else u = upp
+        SetLocVal pick(k), "ItemCode", code
+        SetLocVal pick(k), "UnitsOnPallet", u
+        LogMove code, "(new stock)", CStr(vId(pick(k), 1))
+    Next k
+    Application.ScreenUpdating = True
+
+    If MsgBox("Add " & Format$(qty, "#,##0") & " units to OnHandUnits for " & code & " on the Items sheet?", _
+              vbYesNo + vbQuestion, APP_TITLE) = vbYes Then
+        With ItemsT
+            .DataBodyRange.Cells(ii, TC(ItemsT, "OnHandUnits")).Value = _
+                Val(CStr(.DataBodyRange.Cells(ii, TC(ItemsT, "OnHandUnits")).Value)) + qty
+        End With
+    End If
+    RestoreApp calcMode
+    RefreshMapCore True
+    Application.StatusBar = "Placed " & nPick & " pallet" & IIf(nPick = 1, "", "s") & " of " & code & "."
+
+Done:
+    RestoreApp calcMode
+    Exit Sub
+Fail:
+    MsgBox "Find Space stopped: " & Err.Description, vbExclamation, APP_TITLE
+    Resume Done
+End Sub
+
+' Simple insertion sort of idx() by key() (ascending), first n entries
+Private Sub SortByKey(idx() As Long, key() As Double, ByVal n As Long)
+    Dim i As Long, j As Long, ti As Long, tk As Double
+    For i = 2 To n
+        ti = idx(i): tk = key(i)
+        j = i - 1
+        Do While j >= 1
+            If key(j) <= tk Then Exit Do
+            idx(j + 1) = idx(j): key(j + 1) = key(j)
+            j = j - 1
+        Loop
+        idx(j + 1) = ti: key(j + 1) = tk
+    Next i
+End Sub
+
+
+'=====================================================================
+'  LAYOUT MATHS  (same rules as compute_layout in build_map.py)
+'=====================================================================
+Private Function YesValue(ByVal v As Variant) As Boolean
+    Dim s As String
+    s = LCase$(Trim$(CStr(v)))
+    YesValue = (s = "yes" Or s = "y" Or s = "true" Or s = "1")
+End Function
+
+' Reads tblAisles. Returns "" if fine, or a message describing the problem.
+' Zone codes that are not in tblZones are returned in warns (not fatal).
+Private Function ReadAisles(aisles() As AisleRec, n As Long, warns As String) As String
+    Dim lo As ListObject, rows As Long, i As Long, j As Long, errs As String, a As AisleRec
+    Dim vId As Variant, vSide As Variant, vOrd As Variant, vAcr As Variant, vDeep As Variant
+    Dim vZone As Variant, vGap As Variant, vAct As Variant, ch As String, k As Long
+
+    Set lo = AislesT
+    rows = RowCount(lo)
+    n = 0
+    If rows = 0 Then
+        ReadAisles = "The Aisles table on Config is empty."
+        Exit Function
+    End If
+    ReDim aisles(1 To rows)
+    vId = ColValues(lo, "AisleID"): vSide = ColValues(lo, "Side"): vOrd = ColValues(lo, "Order")
+    vAcr = ColValues(lo, "PalletsAcross"): vDeep = ColValues(lo, "PalletsDeep")
+    vZone = ColValues(lo, "Zone"): vGap = ColValues(lo, "GapAfter"): vAct = ColValues(lo, "Active")
+
+    For i = 1 To rows
+        If Trim$(CStr(vId(i, 1))) <> "" And YesValue(vAct(i, 1)) Then
+            a.id = Trim$(CStr(vId(i, 1)))
+            For k = 1 To Len(a.id)
+                ch = Mid$(a.id, k, 1)
+                If Not (ch Like "[A-Za-z0-9]") Then errs = errs & vbLf & "Aisle '" & a.id & "': use letters and numbers only.": Exit For
+            Next k
+            Select Case LCase$(Left$(Trim$(CStr(vSide(i, 1))), 1))
+                Case "l": a.sideCode = "L"
+                Case "r": a.sideCode = "R"
+                Case Else: errs = errs & vbLf & "Aisle " & a.id & ": Side must be Left or Right."
+            End Select
+            If IsNumeric(vOrd(i, 1)) And Not IsEmpty(vOrd(i, 1)) Then a.ord = CDbl(vOrd(i, 1)) Else errs = errs & vbLf & "Aisle " & a.id & ": Order must be a number."
+            If IsNumeric(vAcr(i, 1)) And Not IsEmpty(vAcr(i, 1)) Then a.across = CLng(vAcr(i, 1)) Else a.across = 0
+            If IsNumeric(vDeep(i, 1)) And Not IsEmpty(vDeep(i, 1)) Then a.deep = CLng(vDeep(i, 1)) Else a.deep = 0
+            If a.across < 1 Or a.across > 26 Then errs = errs & vbLf & "Aisle " & a.id & ": PalletsAcross must be 1 to 26."
+            If a.deep < 1 Or a.deep > 99 Then errs = errs & vbLf & "Aisle " & a.id & ": PalletsDeep must be 1 to 99."
+            If IsNumeric(vGap(i, 1)) And Not IsEmpty(vGap(i, 1)) Then a.gap = CLng(vGap(i, 1)) Else a.gap = 0
+            If a.gap < 0 Then a.gap = 0
+            a.zone = Trim$(CStr(vZone(i, 1)))
+            If a.zone <> "" And ZoneIndex(a.zone) = 0 Then
+                warns = warns & vbLf & "Aisle " & a.id & ": zone '" & a.zone & "' is not in the Zones table."
+            End If
+            For j = 1 To n
+                If StrComp(aisles(j).id, a.id, vbTextCompare) = 0 Then errs = errs & vbLf & "Aisle " & a.id & " is listed twice."
+            Next j
+            n = n + 1
+            aisles(n) = a
+        End If
+    Next i
+    If n = 0 And errs = "" Then errs = vbLf & "No aisles are marked Active = Yes."
+    ReadAisles = errs
+End Function
+
+Private Sub ComputeLayout(aisles() As AisleRec, ByVal n As Long, ByVal walkway As Long)
+    Dim leftIdx() As Long, rightIdx() As Long, nl As Long, nr As Long, i As Long, j As Long, t As Long
+    Dim lw As Long, rw As Long, hl As Long, hr As Long, h As Long, s As Long, cur As Long
+    Dim topData As Long, labelRow As Long, k As Long, d As Long, a As AisleRec, lst() As Long, cnt As Long
+
+    ReDim leftIdx(1 To n): ReDim rightIdx(1 To n)
+    For i = 1 To n
+        If aisles(i).sideCode = "L" Then
+            nl = nl + 1: leftIdx(nl) = i
+            If aisles(i).deep > lw Then lw = aisles(i).deep
+            hl = hl + 1 + aisles(i).across + aisles(i).gap
+        Else
+            nr = nr + 1: rightIdx(nr) = i
+            If aisles(i).deep > rw Then rw = aisles(i).deep
+            hr = hr + 1 + aisles(i).across + aisles(i).gap
+        End If
+    Next i
+    ' Stable sort each side by Order
+    For i = 2 To nl
+        t = leftIdx(i): j = i - 1
+        Do While j >= 1
+            If aisles(leftIdx(j)).ord <= aisles(t).ord Then Exit Do
+            leftIdx(j + 1) = leftIdx(j): j = j - 1
+        Loop
+        leftIdx(j + 1) = t
+    Next i
+    For i = 2 To nr
+        t = rightIdx(i): j = i - 1
+        Do While j >= 1
+            If aisles(rightIdx(j)).ord <= aisles(t).ord Then Exit Do
+            rightIdx(j + 1) = rightIdx(j): j = j - 1
+        Loop
+        rightIdx(j + 1) = t
+    Next i
+
+    h = hl
+    If hr > h Then h = hr
+    If 14 + cZoneN > h Then h = 14 + cZoneN              ' room for the legend
+    gBottom = ROW_AREA_TOP + h - 1
+    gWalkStart = 2 + lw
+    gWalkEnd = gWalkStart + walkway - 1
+    gRightStart = gWalkEnd + 1
+    gMapLastCol = gWalkEnd
+    If gRightStart + rw - 1 > gMapLastCol Then gMapLastCol = gRightStart + rw - 1
+    gLegendCol = gMapLastCol + 2
+    gLastCol = gLegendCol + LEGEND_COLS - 1
+    gFireRow = gBottom + 2
+
+    gLocN = 0: gLabelN = 0
+    ReDim gLocs(1 To 1): ReDim gLabels(1 To n)
+    For s = 1 To 2
+        If s = 1 Then lst = leftIdx: cnt = nl Else lst = rightIdx: cnt = nr
+        cur = gBottom
+        For i = 1 To cnt
+            a = aisles(lst(i))
+            topData = cur - a.across + 1
+            labelRow = topData - 1
+            gLabelN = gLabelN + 1
+            gLabels(gLabelN).r = labelRow
+            gLabels(gLabelN).aisle = a.id
+            gLabels(gLabelN).zone = a.zone
+            If a.sideCode = "L" Then
+                gLabels(gLabelN).c0 = gWalkStart - a.deep: gLabels(gLabelN).c1 = gWalkStart - 1
+            Else
+                gLabels(gLabelN).c0 = gRightStart: gLabels(gLabelN).c1 = gRightStart + a.deep - 1
+            End If
+            ReDim Preserve gLocs(1 To gLocN + a.across * a.deep)
+            For k = 0 To a.across - 1
+                For d = 1 To a.deep
+                    gLocN = gLocN + 1
+                    With gLocs(gLocN)
+                        .colLetter = Chr$(65 + k)
+                        .id = a.id & "-" & Format$(d, "00") & "-" & .colLetter
+                        .aisle = a.id
+                        .depth = d
+                        .zone = a.zone
+                        .r = topData + k
+                        If a.sideCode = "L" Then .c = gWalkStart - d Else .c = gRightStart + d - 1
+                    End With
+                Next d
+            Next k
+            cur = labelRow - 1 - a.gap
+        Next i
+    Next s
+End Sub
+
+' Cell size that fits the screen (shrinks down to MinCellSizePx)
+Private Function FitCellSize() As Long
+    Dim px As Long, minPx As Long, sw As Double, sh As Double, rowsN As Long, w As Double, h As Double
+    px = CLng(SettingNum("CellSizePx", 20))
+    minPx = CLng(SettingNum("MinCellSizePx", 14))
+    sw = SettingNum("ScreenWidthPx", 1860)
+    sh = SettingNum("ScreenHeightPx", 760)
+    rowsN = gFireRow - ROW_BAY + 1
+    Do
+        w = gLastCol * px
+        h = TITLE_PX + INFO_PX + BUTTONS_PX + rowsN * px
+        If (w <= sw And h <= sh) Or px <= minPx Then Exit Do
+        px = px - 1
+    Loop
+    FitCellSize = px
+End Function
+
+
+'=====================================================================
+'  DRAW THE WHOLE MAP SHEET  (used by Rebuild Layout)
+'=====================================================================
+Private Sub DrawMap(ByVal px As Long)
+    Dim ws As Worksheet, shp As Shape, i As Long, c As Long, r As Long, logoW As Long
+    Dim cw As Double, k As Long, z As Long, nm As String, headerFill As Long, headerText As Long
+    Dim brand As Long, rng As Range, lastOld As Long
+
+    Set ws = MapSheet
+    headerFill = SettingColour("HeaderFill", vbBlack)
+    headerText = SettingColour("HeaderText", vbWhite)
+    brand = SettingColour("BrandAccent", RGB(230, 0, 126))
+
+    ' Clear the old drawing (pictures such as the logo are kept)
+    For Each shp In ws.Shapes
+        If LCase$(Left$(shp.Name, 3)) = "btn" Then shp.Delete
+    Next shp
+    lastOld = ws.UsedRange.Row + ws.UsedRange.Rows.Count + 5
+    If lastOld < gFireRow + 5 Then lastOld = gFireRow + 5
+    With ws.Range(ws.Cells(1, 1), ws.Cells(lastOld, ws.UsedRange.Column + ws.UsedRange.Columns.Count + 5))
+        .ClearComments
+        .UnMerge
+        .Clear
+        .FormatConditions.Delete
+        .ColumnWidth = ws.StandardWidth
+        .RowHeight = ws.StandardHeight
+    End With
+
+    ' Square cells: set a width, then correct it using the real width in points
+    cw = (px - 5) / 7
+    If cw < 0.5 Then cw = 0.5
+    ws.Columns(1).ColumnWidth = cw
+    For k = 1 To 3
+        ws.Columns(1).ColumnWidth = ws.Columns(1).ColumnWidth * (px * 0.75) / ws.Columns(1).Width
+    Next k
+    ws.Range(ws.Columns(1), ws.Columns(gLastCol)).ColumnWidth = ws.Columns(1).ColumnWidth
+    ws.Rows(ROW_TITLE).RowHeight = TITLE_PX * 0.75
+    ws.Rows(ROW_INFO).RowHeight = INFO_PX * 0.75
+    ws.Rows(ROW_BUTTONS).RowHeight = BUTTONS_PX * 0.75
+    ws.Range(ws.Rows(ROW_BAY), ws.Rows(gFireRow)).RowHeight = px * 0.75
+
+    ' Title bar with the logo spot on the right
+    logoW = gLastCol \ 4
+    If logoW > 6 Then logoW = 6
+    With ws.Range(ws.Cells(1, 1), ws.Cells(1, gLastCol - logoW))
+        .Merge
+        .Cells(1, 1).Value = "Consumables Floor Map, Sherburn"
+        .Font.Name = "Arial": .Font.Size = 14: .Font.Bold = True: .Font.Color = headerText
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+    End With
+    With ws.Range(ws.Cells(1, gLastCol - logoW + 1), ws.Cells(1, gLastCol))
+        .Merge
+        .Cells(1, 1).Value = "Logo"
+        .Font.Name = "Arial": .Font.Size = 8: .Font.Italic = True: .Font.Color = RGB(128, 128, 128)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    ThisWorkbook.Names.Add Name:="LogoSpot", RefersTo:="=" & SH_MAP & "!" & ws.Cells(1, gLastCol - logoW + 1).Address
+    With ws.Range(ws.Cells(1, 1), ws.Cells(1, gLastCol))
+        .Interior.Color = headerFill
+        With .Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous: .Weight = xlThick: .Color = brand
+        End With
+    End With
+    With ws.Range(ws.Cells(2, 1), ws.Cells(2, gLastCol))
+        .Merge
+        .Cells(1, 1).Value = "Click a pallet, then click where it goes (empty = move, occupied = swap). Click it again " & _
+                 "or press Esc / Cancel Move to cancel. Without macros: edit ItemCode on the Locations sheet."
+        .Font.Name = "Arial": .Font.Size = 8: .Font.Italic = True: .Font.Color = RGB(64, 64, 64)
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+    End With
+    ' Keep any pasted logo picture over the logo spot
+    For Each shp In ws.Shapes
+        If shp.Type = msoPicture Then
+            If shp.TopLeftCell.Row = 1 Then shp.Left = ws.Cells(1, gLastCol - logoW + 1).Left
+        End If
+    Next shp
+
+    ' Loading bay (top) and fire exit (bottom)
+    BarLabel ROW_BAY, "LOADING BAY", headerFill
+    BarLabel gFireRow, "FIRE EXIT", SettingColour("FireExitGreen", RGB(0, 132, 61))
+
+    ' Main walkway
+    With ws.Range(ws.Cells(ROW_AREA_TOP, gWalkStart), ws.Cells(gBottom, gWalkEnd))
+        .Merge
+        .Cells(1, 1).Value = "MAIN WALKWAY"
+        .Orientation = 90
+        .Font.Name = "Arial": .Font.Size = 8: .Font.Bold = True: .Font.Color = RGB(166, 166, 166)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' Aisle labels
+    For i = 1 To gLabelN
+        With gLabels(i)
+            Set rng = ws.Range(ws.Cells(.r, .c0), ws.Cells(.r, .c1))
+            If .c1 > .c0 Then rng.Merge
+            z = ZoneIndex(.zone)
+            If z > 0 Then nm = cZoneName(z) Else nm = "No zone"
+            If .c1 - .c0 >= 5 Then rng.Cells(1, 1).Value = .aisle & "  " & nm Else rng.Cells(1, 1).Value = .aisle
+            rng.Font.Name = "Arial": rng.Font.Size = 8: rng.Font.Bold = True
+            rng.HorizontalAlignment = xlLeft
+            rng.VerticalAlignment = xlBottom
+            With rng.Borders(xlEdgeBottom)
+                .LineStyle = xlContinuous: .Weight = xlThin: .Color = brand
+            End With
+        End With
+    Next i
+
+    ' Pallet squares: each shows the short item code live from tblLocations
+    For i = 1 To gLocN
+        ws.Cells(gLocs(i).r, gLocs(i).c).Formula = _
+            "=IFERROR(LEFT(INDEX(tblLocations[ItemCode],MATCH(""" & gLocs(i).id & _
+            """,tblLocations[LocationID],0))&"""",MapLabelChars),"""")"
+    Next i
+
+    ' Named ranges used by the macros and for printing
+    ThisWorkbook.Names.Add Name:="MapArea", RefersTo:="=" & SH_MAP & "!$A$1:" & ws.Cells(gFireRow, gLastCol).Address
+    ThisWorkbook.Names.Add Name:="MapLegend", RefersTo:="=" & SH_MAP & "!" & ws.Cells(ROW_AREA_TOP, gLegendCol).Address
+    ws.PageSetup.PrintArea = ws.Range("MapArea").Address
+End Sub
+
+Private Sub BarLabel(ByVal r As Long, ByVal text As String, ByVal colour As Long)
+    Dim ws As Worksheet
+    Set ws = MapSheet
+    With ws.Range(ws.Cells(r, 2), ws.Cells(r, gMapLastCol))
+        .Merge
+        .Cells(1, 1).Value = text
+        .Interior.Color = colour
+        .Font.Name = "Arial": .Font.Size = 9: .Font.Bold = True: .Font.Color = vbWhite
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+End Sub
+
+
+' Copy the dropdown and formatting of a column's first cell down the whole column
+Private Sub CopyDownFromFirstRow(lo As ListObject, ByVal colIdx As Long)
+    Dim col As Range
+    Set col = lo.ListColumns(colIdx).DataBodyRange
+    col.Cells(1, 1).Copy
+    col.PasteSpecial Paste:=xlPasteValidation
+    col.PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+End Sub
+
+
+'=====================================================================
+'  BUTTON: REBUILD LAYOUT  - after editing tblAisles on Config
+'=====================================================================
+Public Sub RebuildLayout()
+    Dim aisles() As AisleRec, nA As Long, problems As String, calcMode As Long
+    Dim lo As ListObject, oldN As Long, i As Long, j As Long, px As Long
+    Dim oldId As Variant, oldItem As Variant, oldUnits As Variant, arr() As Variant
+    Dim cId As Long, cAisle As Long, cDepth As Long, cCol As Long, cZone As Long
+    Dim cItem As Long, cUnits As Long, cRow As Long, cMapCol As Long, nCols As Long
+    Dim found As Boolean, lost As String, nLost As Long, kept As Long, hdr As Range, ws As Worksheet
+    Dim warns As String
+
+    If MsgBox("Rebuild the Map and the Locations table from the Aisles table on Config?" & vbLf & vbLf & _
+              "Pallets stay where their LocationID still exists. Any that no longer fit are listed " & _
+              "and written to the MoveLog.", vbYesNo + vbQuestion, APP_TITLE & " - Rebuild Layout") = vbNo Then Exit Sub
+
+    calcMode = Application.Calculation
+    On Error GoTo Fail
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    LoadCaches
+    If mSel > 0 Then CancelMoveCore
+
+    problems = ReadAisles(aisles, nA, warns)
+    If problems <> "" Then
+        Application.ScreenUpdating = True
+        MsgBox "Please fix the Aisles table on Config first:" & vbLf & problems, vbExclamation, APP_TITLE
+        GoTo Done
+    End If
+    If warns <> "" Then
+        Application.ScreenUpdating = True
+        If MsgBox("Warning:" & warns & vbLf & vbLf & "Those positions will be shown grey. Carry on?", _
+                  vbYesNo + vbExclamation, APP_TITLE) = vbNo Then GoTo Done
+        Application.ScreenUpdating = False
+    End If
+    Application.Calculation = xlCalculationManual
+
+    ComputeLayout aisles, nA, CLng(SettingNum("WalkwayCells", 3))
+    px = FitCellSize()
+
+    ' Snapshot what is placed now
+    Set lo = LocT
+    Set ws = lo.Parent
+    oldN = RowCount(lo)
+    If oldN > 0 Then
+        oldId = ColValues(lo, "LocationID")
+        oldItem = ColValues(lo, "ItemCode")
+        oldUnits = ColValues(lo, "UnitsOnPallet")
+    End If
+
+    ' New table contents
+    nCols = lo.ListColumns.Count
+    cId = TC(lo, "LocationID"): cAisle = TC(lo, "Aisle"): cDepth = TC(lo, "Depth"): cCol = TC(lo, "Column")
+    cZone = TC(lo, "Zone"): cItem = TC(lo, "ItemCode"): cUnits = TC(lo, "UnitsOnPallet")
+    cRow = TC(lo, "MapRow"): cMapCol = TC(lo, "MapCol")
+    ReDim arr(1 To gLocN, 1 To nCols)
+    For i = 1 To gLocN
+        arr(i, cId) = gLocs(i).id
+        arr(i, cAisle) = gLocs(i).aisle
+        arr(i, cDepth) = gLocs(i).depth
+        arr(i, cCol) = gLocs(i).colLetter
+        arr(i, cZone) = gLocs(i).zone
+        arr(i, cRow) = gLocs(i).r
+        arr(i, cMapCol) = gLocs(i).c
+        arr(i, cItem) = Empty
+        arr(i, cUnits) = Empty
+    Next i
+    ' Carry pallets over by LocationID
+    For j = 1 To oldN
+        If Trim$(CStr(oldItem(j, 1))) <> "" Then
+            found = False
+            For i = 1 To gLocN
+                If StrComp(gLocs(i).id, CStr(oldId(j, 1)), vbTextCompare) = 0 Then
+                    arr(i, cItem) = oldItem(j, 1)
+                    arr(i, cUnits) = oldUnits(j, 1)
+                    found = True
+                    kept = kept + 1
+                    Exit For
+                End If
+            Next i
+            If Not found Then
+                nLost = nLost + 1
+                If nLost <= 25 Then lost = lost & vbLf & "   " & oldId(j, 1) & ": " & oldItem(j, 1)
+                LogMove CStr(oldItem(j, 1)), CStr(oldId(j, 1)), "(removed by Rebuild Layout)"
+            End If
+        End If
+    Next j
+
+    ' Resize the table and write it
+    Set hdr = lo.HeaderRowRange
+    If oldN > gLocN Then
+        hdr.Offset(gLocN + 1).Resize(oldN - gLocN).Clear
+    End If
+    lo.Resize hdr.Resize(gLocN + 1)
+    lo.DataBodyRange.Value = arr
+    lo.ListColumns("Depth").DataBodyRange.NumberFormat = "00"
+    ' Copy dropdown, checks and formatting from the first row to every row
+    ws.Activate
+    CopyDownFromFirstRow lo, cItem
+    CopyDownFromFirstRow lo, cUnits
+
+    ' Redraw the Map sheet
+    MapSheet.Activate
+    DrawMap px
+    Application.Calculation = calcMode
+    Application.Calculate
+    RestoreApp calcMode
+    RefreshMapCore True
+    SetupButtons
+    FitMap
+
+    MsgBox "Layout rebuilt: " & gLocN & " positions, " & kept & " pallets kept in place." & _
+           IIf(nLost > 0, vbLf & vbLf & nLost & " pallet" & IIf(nLost = 1, "", "s") & _
+           " no longer fit (also written to MoveLog):" & lost & IIf(nLost > 25, vbLf & "   ...", ""), ""), _
+           IIf(nLost > 0, vbExclamation, vbInformation), APP_TITLE
+Done:
+    RestoreApp calcMode
+    Exit Sub
+Fail:
+    MsgBox "Rebuild stopped: " & Err.Description & vbLf & "Nothing has been lost from the MoveLog; " & _
+           "press Rebuild Layout again after fixing the problem.", vbExclamation, APP_TITLE
+    Resume Done
+End Sub
+
+
+'=====================================================================
+'  BUTTON: FIT TO SCREEN  - Zoom to Selection on MapArea
+'=====================================================================
+Public Sub FitMap()
+    Dim ws As Worksheet
+    On Error GoTo Done
+    Application.EnableEvents = False
+    Set ws = MapSheet
+    ws.Activate
+    ActiveWindow.DisplayGridlines = False
+    ActiveWindow.DisplayHeadings = False
+    ActiveWindow.ScrollRow = 1
+    ActiveWindow.ScrollColumn = 1
+    ws.Range("MapArea").Select
+    ActiveWindow.Zoom = True
+    If ActiveWindow.Zoom > 200 Then ActiveWindow.Zoom = 200
+    ws.Range("A1").Select
+Done:
+    Application.EnableEvents = True
+End Sub
+
+
+'=====================================================================
+'  RUN ONCE: draws the five buttons on the Map sheet
+'  (Rebuild Layout also redraws them)
+'=====================================================================
+Public Sub SetupButtons()
+    Dim ws As Worksheet, shp As Shape, captions As Variant, macros As Variant
+    Dim i As Long, x As Double, w As Double, gapW As Double, brand As Long, areaW As Double
+    Set ws = MapSheet
+    For Each shp In ws.Shapes
+        If LCase$(Left$(shp.Name, 3)) = "btn" Then shp.Delete
+    Next shp
+    captions = Array("Refresh", "Find Space", "Rebuild Layout", "Fit to Screen", "Cancel Move")
+    macros = Array("RefreshMap", "FindSpace", "RebuildLayout", "FitMap", "CancelMove")
+    brand = SettingColour("BrandAccent", RGB(230, 0, 126))
+    gapW = 6
+    areaW = ws.Range("MapArea").Width - ws.Columns(1).Width * 2
+    w = (areaW - gapW * 4) / 5
+    If w > 95 Then w = 95
+    x = ws.Columns(1).Width * 2
+    For i = 0 To 4
+        Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, x, ws.Rows(ROW_BUTTONS).Top + 2, _
+                                     w, ws.Rows(ROW_BUTTONS).Height - 4)
+        With shp
+            .Name = "btn" & Replace(captions(i), " ", "")
+            .Fill.ForeColor.RGB = brand
+            .Line.Visible = msoFalse
+            .Shadow.Visible = msoFalse
+            .Placement = xlFreeFloating
+            .OnAction = macros(i)
+            With .TextFrame2
+                .MarginLeft = 2: .MarginRight = 2: .MarginTop = 0: .MarginBottom = 0
+                .VerticalAnchor = msoAnchorMiddle
+                .WordWrap = msoFalse
+                With .TextRange
+                    .Text = captions(i)
+                    .Font.Name = "Arial"
+                    .Font.Size = 8
+                    .Font.Bold = msoTrue
+                    .Font.Fill.ForeColor.RGB = vbWhite
+                    .ParagraphFormat.Alignment = msoAlignCenter
+                End With
+            End With
+        End With
+        x = x + w + gapW
+    Next i
+End Sub
+
+
+'=====================================================================
+'  Called by the Locations sheet when ItemCode / UnitsOnPallet change
+'=====================================================================
+Public Sub LocationsChanged(ByVal Target As Range)
+    Dim lo As ListObject, watch As Range
+    Set lo = LocT
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+    Set watch = Union(lo.ListColumns("ItemCode").DataBodyRange, lo.ListColumns("UnitsOnPallet").DataBodyRange)
+    If Intersect(Target, watch) Is Nothing Then Exit Sub
+    RefreshMapCore True
+End Sub
+'=====================================================================
+'=====  PART 1 END                                                =====
+'=====================================================================
+
+
+
+'=====================================================================
+'=====  PART 2 START : paste into the MAP sheet's code window     =====
+'=====  (in the VBA editor, double-click "Map" under              =====
+'=====   Microsoft Excel Objects, then paste)                     =====
+'=====================================================================
+Option Explicit
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    HandleMapClick Target
+End Sub
+'=====================================================================
+'=====  PART 2 END                                                =====
+'=====================================================================
+
+
+
+'=====================================================================
+'=====  PART 3 START : paste into the LOCATIONS sheet's code window =
+'=====  Repaints the Map when someone edits ItemCode by hand.      =
+'=====================================================================
+Option Explicit
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    LocationsChanged Target
+End Sub
+'=====================================================================
+'=====  PART 3 END                                                =====
+'=====================================================================
+
+
+
+'=====================================================================
+'=====  PART 4 START (OPTIONAL) : paste into ThisWorkbook          =
+'=====  Opens on the Map, repainted and fitted to the screen.      =
+'=====================================================================
+Option Explicit
+
+Private Sub Workbook_Open()
+    ThisWorkbook.Worksheets("Map").Activate
+    RefreshMap
+    FitMap
+    Application.StatusBar = False
+End Sub
+'=====================================================================
+'=====  PART 4 END                                                =====
+'=====================================================================
