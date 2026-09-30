@@ -14,9 +14,9 @@ function box(title, colour, lines) {
     width: { size: W, type: WidthType.DXA },
     borders: { top: none, bottom: none, right: none, left: { style: BorderStyle.SINGLE, size: 48, color: colour } },
     shading: { fill: "F5F5F5", type: ShadingType.CLEAR, color: "auto" },
-    margins: { top: 140, bottom: 120, left: 260, right: 200 }, children: kids })] })] });
+    margins: { top: 100, bottom: 80, left: 260, right: 200 }, children: kids })] })] });
 }
-const gap = (a = 180) => new Paragraph({ spacing: { after: a }, children: [] });
+const gap = (a = 90) => new Paragraph({ spacing: { after: a }, children: [] });
 
 function colours() {
   const rows = [["C8A165", "Coloured square", "A pallet is there"], ["F3EBDD", "Stripes", "Free space"],
@@ -31,7 +31,7 @@ function colours() {
 }
 
 const doc = new Document({ styles: { default: { document: { run: { font: FONT, size: 26 } } } }, sections: [{
-  properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 1000, bottom: 900, left: 1134, right: 1134 } } },
+  properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 800, bottom: 700, left: 1134, right: 1134 } } },
   children: [
     new Paragraph({ spacing: { after: 40 }, children: [t("Floor Map: how to use", { size: 48, bold: true })] }),
     new Paragraph({ spacing: { after: 260 }, border: { bottom: { style: BorderStyle.SINGLE, size: 24, color: MAG, space: 6 } },
@@ -43,10 +43,12 @@ const doc = new Document({ styles: { default: { document: { run: { font: FONT, s
     box("MOVE A PALLET", "0070C0", ["Take it out of the old square (**Delete**).", "Put it in the new square (**arrow**, then pick)."]),
     gap(),
     box("NEW ITEM?", MAG, ["Go to the **Stock** sheet.", "Type it on the first empty row: **code**, **description**, **zone**.", "It now shows up in the arrow list on the Map."]),
-    gap(260),
+    gap(),
+    box("CHANGE A ZONE NAME?", "404040", ["Go to the **Stock** sheet.", "Type over the name in the **pink box** on the right.", "The Map changes by itself."]),
+    gap(160),
     new Paragraph({ spacing: { after: 120 }, children: [t("What the colours mean", { size: 32, bold: true })] }),
     colours(),
-    gap(200),
+    gap(140),
     para("**LOW** on the Stock sheet means you're nearly out: time to order.", { size: 24 }),
   ] }] });
 Packer.toBuffer(doc).then(b => { fs.writeFileSync(process.argv[2], b); console.log("ok"); });

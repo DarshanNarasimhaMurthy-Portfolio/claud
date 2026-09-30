@@ -132,15 +132,32 @@ def build(cfg, out, demo):
     st.freeze_panes = f"B{hr + 1}"
 
     # Zone key + free space, to the right
+    # Code (used in the Zone column) | Zone name (editable) | Spaces | Used | Free
     zc = 8
-    st.column_dimensions[L(zc)].width = 22
-    for j, w in enumerate([10, 10, 10]):
-        st.column_dimensions[L(zc + 1 + j)].width = w
-    for j, h in enumerate(["Zone", "Spaces", "Used", "Free"]):
+    for j, w in enumerate([8, 24, 9, 9, 9]):
+        st.column_dimensions[L(zc + j)].width = w
+    for j, h in enumerate(["Code", "Zone name (you can change it)", "Spaces", "Used", "Free"]):
         cc = st.cell(hr, zc + j, h)
         cc.font = f(11, True, "FFFFFF")
         cc.fill = solid("000000")
+        cc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    edit = side("medium", s["BrandAccent"])
+    zrow = {}
+    for i, z in enumerate(zones):
+        sr = hr + 1 + i
+        zrow[z["Code"]] = sr
+        cc = st.cell(sr, zc, z["Code"])
+        cc.fill = solid(z["Colour"])
+        cc.font = f(12, True, "FFFFFF" if is_dark(z["Colour"]) else "000000")
         cc.alignment = Alignment(horizontal="center", vertical="center")
+        cc = st.cell(sr, zc + 1, z["Name"])
+        cc.font = f(12, True)
+        cc.border = Border(left=edit, right=edit, top=edit, bottom=edit)
+        cc.alignment = Alignment(vertical="center", indent=1)
+        add_name(wb, f"zn_{z['Code']}", f"Stock!${L(zc + 1)}${sr}")
+        st.row_dimensions[sr].height = 22
+    st.cell(hr + len(zones) + 1, zc, "Type over a zone name (pink box) and the Map changes too. "
+            "In the Zone column on the left, use the Code.").font = f(9, False, "595959")
 
     # ------------------------------------------------------------ Lists sheet (hidden helper)
     lists.sheet_state = "hidden"
@@ -204,7 +221,12 @@ def build(cfg, out, demo):
         if c1 > c0:
             ws.merge_cells(start_row=label_row, start_column=c0, end_row=label_row, end_column=c1)
         zone = str(a.get("Zone") or "")
-        text = f"{a['AisleID']}   NOT OURS" if blocked(a.get("Active")) else f"{a['AisleID']}   {zname.get(zone, 'No zone')}"
+        if blocked(a.get("Active")):
+            text = f"{a['AisleID']}   NOT OURS"
+        elif zone in zname:
+            text = f'="{a["AisleID"]}   "&zn_{zone}'
+        else:
+            text = f"{a['AisleID']}   No zone"
         c = ws.cell(label_row, c0, text)
         c.font = f(11, True)
         c.alignment = Alignment(horizontal="left", vertical="bottom")
@@ -240,7 +262,7 @@ def build(cfg, out, demo):
             type="list", formula1=f"dd_{zone}" if colour else "dd_ALL", allow_blank=True,
             showErrorMessage=True, errorStyle="warning", errorTitle="Not for this zone",
             error="That item isn't listed for this zone (or isn't on the Stock sheet). Put it here anyway?",
-            showInputMessage=True, promptTitle=f"{aisle}  {zname.get(zone, '')}",
+            showInputMessage=True, promptTitle=f"Aisle {aisle}  ({zone or 'no zone'})",
             prompt="Click the arrow and pick an item. Press Delete to empty.")
         dvz.add(rng)
         ws.add_data_validation(dvz)
@@ -276,7 +298,7 @@ def build(cfg, out, demo):
     for z in zones:
         r += 1
         ws.cell(r, lc).fill = solid(z["Colour"])
-        text(r, lc + 2, z["Name"])
+        text(r, lc + 2, f"=zn_{z['Code']}")
     keys = [(stripes(zones[0]["Colour"]), "Stripes = free space"),
             (solid(s["AlertRed"]), "Red = wrong zone, move it"),
             (solid(s["NotOursGrey"]), "Grey = not ours")]
@@ -298,19 +320,15 @@ def build(cfg, out, demo):
         cc = ws.cell(r, lc, f"={total}-({used})")
         cc.font = f(12, True, s["BrandAccent"])
         cc.alignment = Alignment(horizontal="right", vertical="center")
-        text(r, lc + 2, z["Name"])
+        text(r, lc + 2, f"=zn_{z['Code']}")
         # Stock sheet zone summary
-        sr = hr + 1 + zones.index(z)
-        st.cell(sr, zc, z["Name"]).font = f(12, True)
-        st.cell(sr, zc).fill = solid(z["Colour"])
-        st.cell(sr, zc).font = f(12, True, "FFFFFF" if is_dark(z["Colour"]) else "000000")
-        st.cell(sr, zc + 1, total)
-        st.cell(sr, zc + 2, "=" + "+".join(f"COUNTA(Map!{x})" for x in rngs))
-        st.cell(sr, zc + 3, f"={L(zc + 1)}{sr}-{L(zc + 2)}{sr}")
-        for k in (1, 2, 3):
-            st.cell(sr, zc + k).font = f(12, k == 3)
-            st.cell(sr, zc + k).alignment = Alignment(horizontal="center")
-        st.row_dimensions[sr].height = 22
+        sr = zrow[z["Code"]]
+        st.cell(sr, zc + 2, total)
+        st.cell(sr, zc + 3, "=" + "+".join(f"COUNTA(Map!{x})" for x in rngs))
+        st.cell(sr, zc + 4, f"={L(zc + 2)}{sr}-{L(zc + 3)}{sr}")
+        for k in (2, 3, 4):
+            st.cell(sr, zc + k).font = f(12, k == 4)
+            st.cell(sr, zc + k).alignment = Alignment(horizontal="center", vertical="center")
     r += 2
     band(r, "LOW STOCK")
     r += 1
