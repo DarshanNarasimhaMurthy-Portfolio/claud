@@ -24,6 +24,8 @@ from openpyxl.worksheet.table import Table, TableColumn, TableFormula, TableStyl
 from build_map import (ROW_AREA_TOP, LEGEND_COLS, add_name, blocked, compute_layout, f, hx,
                        is_dark, side, solid)
 
+MAP_HELP = ("PUT AWAY: click a square \u2192 arrow \u2192 pick.     MOVE: double-click a pallet, "
+            "then click where it goes.     REMOVE: click it, press Delete.")
 CELL_PX = 28          # big squares, easy to click
 DD_ROWS = 150         # max items per dropdown list
 STOCK_ROWS_HINT = 2   # example rows
@@ -62,7 +64,9 @@ def build(cfg, out, demo):
     ws = wb.active
     ws.title = "Map"
     st = wb.create_sheet("Stock")
+    moves = wb.create_sheet("Moves")
     lists = wb.create_sheet("Lists")
+    squares = wb.create_sheet("Squares")
     ws.sheet_properties.tabColor = hx(s["BrandAccent"])
     st.sheet_properties.tabColor = "000000"
 
@@ -184,7 +188,7 @@ def build(cfg, out, demo):
         ws.column_dimensions[L(col)].width = CELL_PX / 7.0
     ws.row_dimensions[1].height = 30
     ws.row_dimensions[2].height = 22
-    ws.row_dimensions[3].height = 6
+    ws.row_dimensions[3].height = 24   # room for the macro buttons
     for r in range(4, geo["fire_row"] + 1):
         ws.row_dimensions[r].height = CELL_PX * 0.75
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last)
@@ -195,8 +199,7 @@ def build(cfg, out, demo):
         ws.cell(1, col).fill = solid("000000")
         ws.cell(1, col).border = Border(bottom=side("thick", s["BrandAccent"]))
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last)
-    c = ws.cell(2, 1, "Click a square  →  click the little arrow  →  pick the item.      "
-                      "To empty a square: click it and press Delete.")
+    c = ws.cell(2, 1, MAP_HELP)
     c.font = f(12, True, s["BrandAccent"])
     c.alignment = Alignment(vertical="center", indent=1)
 
@@ -351,6 +354,35 @@ def build(cfg, out, demo):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.sheet_view.selection[0].activeCell = "A1"
     ws.sheet_view.selection[0].sqref = "A1"
+
+    # ------------------------------------------------------------ Moves log (written by the macros)
+    moves.sheet_properties.tabColor = "808080"
+    moves.sheet_view.showGridLines = False
+    moves.merge_cells("A1:F1")
+    moves["A1"].value = "Moves"
+    moves["A1"].font = f(18, True, "FFFFFF")
+    moves["A1"].alignment = Alignment(vertical="center", indent=1)
+    for col in range(1, 7):
+        moves.cell(1, col).fill = solid("000000")
+        moves.cell(1, col).border = Border(bottom=side("thick", s["BrandAccent"]))
+    moves.row_dimensions[1].height = 34
+    moves["A2"].value = "Filled in automatically by the macros. Newest at the bottom."
+    moves["A2"].font = f(11, color="404040")
+    for j, (h, w) in enumerate([("When", 20), ("Who", 16), ("What", 12), ("Item", 14), ("From", 12), ("To", 12)]):
+        cc = moves.cell(4, j + 1, h)
+        cc.font = f(11, True, "FFFFFF")
+        cc.fill = solid("000000")
+        cc.alignment = Alignment(horizontal="center")
+        moves.column_dimensions[L(j + 1)].width = w
+    moves.freeze_panes = "A5"
+
+    # ------------------------------------------------------------ Squares (hidden, used by the macros)
+    squares.sheet_state = "hidden"
+    for j, h in enumerate(["ID", "Aisle", "Zone", "Row", "Col", "Depth"]):
+        squares.cell(1, j + 1, h)
+    for i, p in enumerate(geo["positions"]):
+        for j, v in enumerate([p["LocationID"], p["Aisle"], p["Zone"], p["MapRow"], p["MapCol"], p["Depth"]]):
+            squares.cell(i + 2, j + 1, v)
 
     wb.active = 0
     wb.save(out)

@@ -1,0 +1,622 @@
+'======================================================================
+'  FLOOR MAP (SIMPLE) - MACROS
+'
+'  HOW TO PUT THIS IN (once):
+'   1. Open Floor_Map_Simple.xlsx. File > Save As > "Excel Macro-Enabled
+'      Workbook (*.xlsm)". Use the .xlsm from now on.
+'   2. Press Alt + F11.
+'   3. On the left, double-click the sheet that says (Map).
+'   4. Copy EVERYTHING below the line of stars and paste it in.
+'   5. Close the window. Click any square on the Map - the buttons appear.
+'   6. Ctrl + S to save.
+'
+'  WHAT YOU GET:
+'   * MOVE    - double-click a pallet, then click where it goes
+'               (click another pallet to swap, Esc or Clear to cancel)
+'   * PUT AWAY- double-click an empty square and pick from a list
+'   * Buttons - Find space / Find item / Low stock / Undo / Clear
+'   * Every change is written to the Moves sheet, and Undo can reverse it
+'======================================================================
+'**********************************************************************
+Option Explicit
+
+Private Const BAY_ROW As Long = 4           ' loading bay row on the Map
+Private Const MAX_UNDO As Long = 50
+
+Private mHeld As Range                      ' pallet picked up to move
+Private mBusy As Boolean                    ' true while a macro changes squares
+Private mOldAddr As String                  ' last single cell clicked...
+Private mOldVal As String                   ' ...and what was in it
+Private mJust As Single                     ' time of the last move (double-click guard)
+Private mUndo As Collection                 ' undo steps: "addr=value<TAB>addr=value..."
+Private mHi As Collection                   ' squares with a pink highlight
+
+Private sqId() As String, sqZone() As String
+Private sqRow() As Long, sqCol() As Long, sqDepth() As Long, sqN As Long
+
+
+'======================================================================
+'  EVENTS
+'======================================================================
+Private Sub Worksheet_Activate()
+    EnsureButtons
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    Dim i As Long
+    If mBusy Then Exit Sub
+    EnsureButtons
+    If Target.CountLarge <> 1 Then Exit Sub
+    mOldAddr = Target.Address
+    mOldVal = CellText(Target)
+    i = SqIndex(Target)
+    If i = 0 Then Exit Sub
+    If Not mHeld Is Nothing Then
+        If Target.Address <> mHeld.Address Then DoMove mHeld, Target
+    Else
+        ShowInfo i, Target
+    End If
+End Sub
+
+Private Sub Worksheet_BeforeDoubleClick(ByVal Target As Range, Cancel As Boolean)
+    Dim i As Long
+    If Target.CountLarge <> 1 Then Exit Sub
+    i = SqIndex(Target)
+    If i = 0 Then Exit Sub
+    Cancel = True                           ' don't start typing in the cell
+    If Abs(Timer - mJust) < 1 Then Exit Sub ' the click just finished a move
+    If Not mHeld Is Nothing Then
+        If Target.Address = mHeld.Address Then
+            CancelMove
+        Else
+            DoMove mHeld, Target
+        End If
+    ElseIf CellText(Target) <> "" Then
+        PickUp Target
+    Else
+        PutAway Target, i
+    End If
+End Sub
+
+' Picked from the dropdown, typed, or deleted by hand: log it and allow Undo
+Private Sub Worksheet_Change(ByVal Target As Range)
+    Dim c As Range, i As Long, newV As String
+    If mBusy Then Exit Sub
+    If Target.CountLarge > 500 Then Exit Sub
+    For Each c In Target.Cells
+        i = SqIndex(c)
+        If i > 0 Then
+            newV = CellText(c)
+            If Target.CountLarge = 1 And c.Address = mOldAddr Then
+                If newV <> mOldVal Then
+                    PushUndo c.Address & "=" & mOldVal
+                    If newV = "" Then
+                        LogIt "Removed", mOldVal, sqId(i), ""
+                    ElseIf mOldVal = "" Then
+                        LogIt "Put away", newV, "", sqId(i)
+                    Else
+                        LogIt "Changed", newV, sqId(i) & " (was " & mOldVal & ")", sqId(i)
+                    End If
+                End If
+            Else
+                LogIt IIf(newV = "", "Removed", "Edited"), newV, "", sqId(i)
+            End If
+        End If
+    Next c
+    If Target.CountLarge = 1 Then mOldVal = CellText(Target)
+End Sub
+
+
+'======================================================================
+'  BUTTONS (Public so the buttons can call them)
+'======================================================================
+
+' Find space: pick an item and how many pallets; shows the nearest free
+' squares to the loading bay in that item's zone and offers to fill them.
+Public Sub FindSpace()
+    Dim code As String, zone As String, qty As Variant, n As Long
+    Dim inZ() As Long, outZ() As Long, nIn As Long, nOut As Long, i As Long, k As Long
+    Dim useIn As Long, useOut As Long, msg As String, undo As String, c As Range
+    On Error GoTo Fail
+    CancelMove
+    ClearHighlights
+    code = PickItem("FIND SPACE" & vbLf & "Which item has arrived?", "")
+    If code = "" Then Exit Sub
+    zone = ItemZone(code)
+    qty = Application.InputBox("How many pallets of " & code & "?", "Find space", 1, Type:=1)
+    If VarType(qty) = vbBoolean Then Exit Sub
+    n = CLng(qty)
+    If n < 1 Then Exit Sub
+
+    LoadSquares
+    ReDim inZ(1 To sqN): ReDim outZ(1 To sqN)
+    For i = 1 To sqN
+        If CellText(Me.Cells(sqRow(i), sqCol(i))) = "" Then
+            If zone <> "" And StrComp(sqZone(i), zone, vbTextCompare) = 0 Then
+                nIn = nIn + 1: inZ(nIn) = i
+            Else
+                nOut = nOut + 1: outZ(nOut) = i
+            End If
+        End If
+    Next i
+    SortNearestBay inZ, nIn
+    SortNearestBay outZ, nOut
+    useIn = n: If useIn > nIn Then useIn = nIn
+    useOut = n - useIn: If useOut > nOut Then useOut = nOut
+
+    For k = 1 To useIn
+        Highlight Me.Cells(sqRow(inZ(k)), sqCol(inZ(k)))
+    Next k
+    For k = 1 To useOut
+        Highlight Me.Cells(sqRow(outZ(k)), sqCol(outZ(k)))
+    Next k
+    If useIn + useOut > 0 Then
+        Application.Goto Me.Cells(sqRow(IIf(useIn > 0, inZ(1), outZ(1))), sqCol(IIf(useIn > 0, inZ(1), outZ(1)))), False
+    End If
+
+    msg = code & ": " & n & " pallet" & IIf(n = 1, "", "s") & vbLf & vbLf
+    If useIn > 0 Then msg = msg & useIn & " free in " & ZoneName(zone) & " (pink squares, nearest the bay)." & vbLf
+    If useIn < n Then
+        msg = msg & vbLf & ZoneName(zone) & " is " & IIf(nIn = 0, "FULL.", "short by " & (n - useIn) & ".") & vbLf
+        If useOut > 0 Then msg = msg & useOut & " pink square" & IIf(useOut = 1, " is", "s are") & " in OTHER zones." & vbLf
+        If useIn + useOut < n Then msg = msg & (n - useIn - useOut) & " pallet(s) won't fit anywhere." & vbLf
+    End If
+    If useIn + useOut = 0 Then
+        MsgBox msg, vbExclamation, "Find space"
+        Exit Sub
+    End If
+    If MsgBox(msg & vbLf & "Put " & code & " in the pink squares now?", vbYesNo + vbQuestion, "Find space") = vbYes Then
+        mBusy = True
+        For k = 1 To useIn + useOut
+            If k <= useIn Then i = inZ(k) Else i = outZ(k - useIn)
+            Set c = Me.Cells(sqRow(i), sqCol(i))
+            undo = undo & c.Address & "=" & vbTab
+            c.Value = code
+            LogIt "Put away", code, "(Find space)", sqId(i)
+        Next k
+        mBusy = False
+        PushUndo undo
+        SetMsg "Done: " & (useIn + useOut) & " pallet(s) of " & code & " put away (pink). Press Clear to remove the pink.", RGB(0, 132, 61)
+    Else
+        ClearHighlights
+    End If
+    Exit Sub
+Fail:
+    mBusy = False
+    MsgBox "Find space stopped: " & Err.Description, vbExclamation
+End Sub
+
+' Find item: pink border round every pallet of one item
+Public Sub FindItem()
+    Dim code As String, i As Long, n As Long, first As Range
+    CancelMove
+    ClearHighlights
+    code = PickItem("FIND ITEM" & vbLf & "Which item are you looking for?", "")
+    If code = "" Then Exit Sub
+    LoadSquares
+    For i = 1 To sqN
+        If StrComp(CellText(Me.Cells(sqRow(i), sqCol(i))), code, vbTextCompare) = 0 Then
+            Highlight Me.Cells(sqRow(i), sqCol(i))
+            If first Is Nothing Then Set first = Me.Cells(sqRow(i), sqCol(i))
+            n = n + 1
+        End If
+    Next i
+    If n = 0 Then
+        SetMsg code & " is not on the map.", RGB(192, 0, 0)
+    Else
+        Application.Goto first, False
+        SetMsg code & ": " & n & " pallet" & IIf(n = 1, "", "s") & " - shown in pink. Press Clear when done.", RGB(230, 0, 126)
+    End If
+End Sub
+
+' Low stock: list of items marked LOW on the Stock sheet
+Public Sub LowStock()
+    Dim lo As ListObject, i As Long, msg As String, n As Long
+    Set lo = StockT
+    If Not lo.DataBodyRange Is Nothing Then
+        For i = 1 To lo.ListRows.Count
+            If SafeText(lo.ListColumns("Status").DataBodyRange.Cells(i).Value) = "LOW" Then
+                n = n + 1
+                msg = msg & "   " & SafeText(lo.ListColumns("Item code").DataBodyRange.Cells(i).Value) & "  -  " & _
+                      SafeText(lo.ListColumns("Description").DataBodyRange.Cells(i).Value) & "  (" & _
+                      SafeText(lo.ListColumns("Pallets on map").DataBodyRange.Cells(i).Value) & " pallets)" & vbLf
+            End If
+        Next i
+    End If
+    If n = 0 Then
+        MsgBox "Nothing is low. All good!", vbInformation, "Low stock"
+    Else
+        MsgBox n & " item" & IIf(n = 1, " is", "s are") & " LOW:" & vbLf & vbLf & msg, vbExclamation, "Low stock"
+    End If
+End Sub
+
+' Undo the last change (move, swap, put away, remove, Find space)
+Public Sub UndoLast()
+    Dim parts() As String, i As Long, p As Long, addr As String, v As String
+    CancelMove
+    ClearHighlights
+    If mUndo Is Nothing Then Set mUndo = New Collection
+    If mUndo.Count = 0 Then
+        SetMsg "Nothing to undo.", RGB(128, 128, 128)
+        Exit Sub
+    End If
+    parts = Split(mUndo(mUndo.Count), vbTab)
+    mUndo.Remove mUndo.Count
+    mBusy = True
+    For i = UBound(parts) To 0 Step -1
+        p = InStr(parts(i), "=")
+        If p > 0 Then
+            addr = Left$(parts(i), p - 1)
+            v = Mid$(parts(i), p + 1)
+            LogIt "Undo", IIf(v = "", CellText(Me.Range(addr)), v), "", SqIdAt(Me.Range(addr))
+            If v = "" Then Me.Range(addr).ClearContents Else Me.Range(addr).Value = v
+            Highlight Me.Range(addr)
+        End If
+    Next i
+    mBusy = False
+    SetMsg "Undone (changed squares shown in pink). Press Clear to remove the pink.", RGB(0, 112, 192)
+End Sub
+
+' Clear: cancel a move and remove pink highlights
+Public Sub ClearAll()
+    CancelMove
+    ClearHighlights
+    SetMsg "", 0
+End Sub
+
+' Also called by the Esc key while a pallet is picked up
+Public Sub CancelMove()
+    If Not mHeld Is Nothing Then
+        Grid mHeld
+        Set mHeld = Nothing
+        SetMsg "", 0
+    End If
+    Application.OnKey "{ESC}"
+End Sub
+
+
+'======================================================================
+'  MOVING
+'======================================================================
+Private Sub PickUp(c As Range)
+    ClearHighlights
+    Set mHeld = c
+    Box c, vbBlack
+    Application.OnKey "{ESC}", Me.CodeName & ".CancelMove"
+    SetMsg "MOVING " & CellText(c) & " from " & SqIdAt(c) & "  -  click where it goes  (Esc to cancel)", vbBlack
+End Sub
+
+Private Sub DoMove(src As Range, dst As Range)
+    Dim a As String, b As String, ia As Long, ib As Long, msg As String
+    a = CellText(src): b = CellText(dst)
+    ia = SqIndex(src): ib = SqIndex(dst)
+    msg = ZoneWarning(a, sqZone(ib), sqId(ib))
+    If b <> "" Then msg = msg & ZoneWarning(b, sqZone(ia), sqId(ia))
+    If msg <> "" Then
+        If MsgBox(msg & vbLf & "Put it there anyway?", vbYesNo + vbExclamation + vbDefaultButton2, _
+                  "Different zone") = vbNo Then
+            CancelMove
+            Exit Sub
+        End If
+    End If
+    mBusy = True
+    dst.Value = a
+    If b = "" Then src.ClearContents Else src.Value = b
+    mBusy = False
+    Grid src
+    Set mHeld = Nothing
+    Application.OnKey "{ESC}"
+    PushUndo src.Address & "=" & a & vbTab & dst.Address & "=" & b
+    If b = "" Then
+        LogIt "Moved", a, sqId(ia), sqId(ib)
+        SetMsg "Moved " & a & " from " & sqId(ia) & " to " & sqId(ib) & ".", RGB(0, 132, 61)
+    Else
+        LogIt "Swapped", a, sqId(ia), sqId(ib)
+        LogIt "Swapped", b, sqId(ib), sqId(ia)
+        SetMsg "Swapped " & a & " and " & b & ".", RGB(0, 132, 61)
+    End If
+    mOldAddr = dst.Address
+    mOldVal = CellText(dst)
+    mJust = Timer
+End Sub
+
+' Double-click on an empty square: pick an item for it from a list
+Private Sub PutAway(c As Range, ByVal i As Long)
+    Dim code As String
+    code = PickItem("PUT AWAY in " & sqId(i) & " (" & ZoneName(sqZone(i)) & ")", sqZone(i))
+    If code = "" Then Exit Sub
+    If ZoneWarning(code, sqZone(i), sqId(i)) <> "" Then
+        If MsgBox(ZoneWarning(code, sqZone(i), sqId(i)) & vbLf & "Put it there anyway?", _
+                  vbYesNo + vbExclamation + vbDefaultButton2, "Different zone") = vbNo Then Exit Sub
+    End If
+    mBusy = True
+    c.Value = code
+    mBusy = False
+    PushUndo c.Address & "="
+    LogIt "Put away", code, "", sqId(i)
+    mOldVal = code
+    SetMsg "Put away " & code & " in " & sqId(i) & ".", RGB(0, 132, 61)
+End Sub
+
+Private Function ZoneWarning(ByVal item As String, ByVal zone As String, ByVal id As String) As String
+    Dim iz As String
+    If item = "" Or zone = "" Then Exit Function
+    iz = ItemZone(item)
+    If iz = "" Then Exit Function
+    If StrComp(iz, zone, vbTextCompare) <> 0 Then
+        ZoneWarning = item & " belongs in " & ZoneName(iz) & ", but " & id & " is " & ZoneName(zone) & "." & vbLf
+    End If
+End Function
+
+
+'======================================================================
+'  LOOK-UPS
+'======================================================================
+Private Sub LoadSquares()
+    Dim ws As Worksheet, v As Variant, i As Long, n As Long
+    If sqN > 0 Then Exit Sub
+    Set ws = ThisWorkbook.Worksheets("Squares")
+    n = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row - 1
+    If n < 1 Then Exit Sub
+    v = ws.Range("A2").Resize(n, 6).Value
+    ReDim sqId(1 To n): ReDim sqZone(1 To n): ReDim sqRow(1 To n): ReDim sqCol(1 To n): ReDim sqDepth(1 To n)
+    For i = 1 To n
+        sqId(i) = CStr(v(i, 1))
+        sqZone(i) = CStr(v(i, 3))
+        sqRow(i) = CLng(v(i, 4))
+        sqCol(i) = CLng(v(i, 5))
+        sqDepth(i) = CLng(v(i, 6))
+    Next i
+    sqN = n
+End Sub
+
+Private Function SqIndex(c As Range) As Long
+    Dim i As Long
+    LoadSquares
+    For i = 1 To sqN
+        If sqRow(i) = c.Row Then
+            If sqCol(i) = c.Column Then
+                SqIndex = i
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+Private Function SqIdAt(c As Range) As String
+    Dim i As Long
+    i = SqIndex(c)
+    If i > 0 Then SqIdAt = sqId(i)
+End Function
+
+' Nearest the loading bay first: rows from the bay + distance from the walkway
+Private Sub SortNearestBay(idx() As Long, ByVal n As Long)
+    Dim i As Long, j As Long, t As Long
+    For i = 2 To n
+        t = idx(i)
+        j = i - 1
+        Do While j >= 1
+            If NearKey(idx(j)) <= NearKey(t) Then Exit Do
+            idx(j + 1) = idx(j)
+            j = j - 1
+        Loop
+        idx(j + 1) = t
+    Next i
+End Sub
+
+Private Function NearKey(ByVal i As Long) As Double
+    NearKey = (sqRow(i) - BAY_ROW + sqDepth(i)) * 1000 + sqRow(i)
+End Function
+
+Private Function StockT() As ListObject
+    Set StockT = ThisWorkbook.Worksheets("Stock").ListObjects("tblStock")
+End Function
+
+Private Function ItemRow(ByVal code As String) As Long
+    Dim lo As ListObject, i As Long
+    Set lo = StockT
+    If lo.DataBodyRange Is Nothing Or code = "" Then Exit Function
+    For i = 1 To lo.ListRows.Count
+        If StrComp(SafeText(lo.ListColumns("Item code").DataBodyRange.Cells(i).Value), code, vbTextCompare) = 0 Then
+            ItemRow = i
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function ItemZone(ByVal code As String) As String
+    Dim r As Long
+    r = ItemRow(code)
+    If r > 0 Then ItemZone = SafeText(StockT.ListColumns("Zone").DataBodyRange.Cells(r).Value)
+End Function
+
+Private Function ItemDesc(ByVal code As String) As String
+    Dim r As Long
+    r = ItemRow(code)
+    If r > 0 Then ItemDesc = SafeText(StockT.ListColumns("Description").DataBodyRange.Cells(r).Value)
+End Function
+
+' The name typed on the Stock sheet for a zone code (falls back to the code)
+Private Function ZoneName(ByVal code As String) As String
+    ZoneName = code
+    If code = "" Then ZoneName = "no zone": Exit Function
+    On Error Resume Next
+    ZoneName = SafeText(ThisWorkbook.Names("zn_" & code).RefersToRange.Value)
+    If ZoneName = "" Then ZoneName = code
+End Function
+
+' Numbered list of items; returns the chosen item code or ""
+Private Function PickItem(ByVal title As String, ByVal zoneFilter As String) As String
+    Dim lo As ListObject, i As Long, n As Long, codes() As String, lst As String
+    Dim code As String, z As String, ans As String
+    Set lo = StockT
+    If Not lo.DataBodyRange Is Nothing Then
+        ReDim codes(1 To lo.ListRows.Count)
+        For i = 1 To lo.ListRows.Count
+            code = SafeText(lo.ListColumns("Item code").DataBodyRange.Cells(i).Value)
+            z = SafeText(lo.ListColumns("Zone").DataBodyRange.Cells(i).Value)
+            If code <> "" And (zoneFilter = "" Or StrComp(z, zoneFilter, vbTextCompare) = 0) Then
+                n = n + 1
+                codes(n) = code
+                If Len(lst) < 750 Then
+                    lst = lst & n & "    " & code & "   " & _
+                          SafeText(lo.ListColumns("Description").DataBodyRange.Cells(i).Value) & vbLf
+                End If
+            End If
+        Next i
+    End If
+    If n = 0 And zoneFilter <> "" Then
+        PickItem = PickItem(title & vbLf & "(no items set up for this zone - showing all)", "")
+        Exit Function
+    End If
+    If n = 0 Then
+        MsgBox "There are no items yet. Add them on the Stock sheet first.", vbInformation, "Floor Map"
+        Exit Function
+    End If
+    ans = Trim$(InputBox(title & vbLf & vbLf & lst & vbLf & "Type the NUMBER:", "Floor Map"))
+    If ans = "" Then Exit Function
+    If IsNumeric(ans) Then
+        If CLng(ans) >= 1 And CLng(ans) <= n Then
+            PickItem = codes(CLng(ans))
+            Exit Function
+        End If
+    End If
+    For i = 1 To n
+        If StrComp(codes(i), ans, vbTextCompare) = 0 Then
+            PickItem = codes(i)
+            Exit Function
+        End If
+    Next i
+    MsgBox "'" & ans & "' is not on the list.", vbExclamation, "Floor Map"
+End Function
+
+Private Sub ShowInfo(ByVal i As Long, c As Range)
+    Dim item As String
+    item = CellText(c)
+    If item = "" Then
+        Application.StatusBar = sqId(i) & "  |  " & ZoneName(sqZone(i)) & "  |  empty"
+    Else
+        Application.StatusBar = sqId(i) & "  |  " & ZoneName(sqZone(i)) & "  |  " & item & "  " & ItemDesc(item)
+    End If
+End Sub
+
+
+'======================================================================
+'  SMALL HELPERS
+'======================================================================
+Private Function SafeText(ByVal v As Variant) As String
+    If IsError(v) Then Exit Function
+    SafeText = Trim$(CStr(v))
+End Function
+
+Private Function CellText(c As Range) As String
+    CellText = SafeText(c.Value)
+End Function
+
+' The message line under the title (blank text = normal instructions)
+Private Sub SetMsg(ByVal text As String, ByVal colour As Long)
+    Dim wasBusy As Boolean
+    wasBusy = mBusy
+    mBusy = True
+    If text = "" Then
+        Me.Range("A2").Value = "PUT AWAY: click a square " & ChrW(8594) & " arrow " & ChrW(8594) & _
+            " pick.     MOVE: double-click a pallet, then click where it goes.     REMOVE: click it, press Delete."
+        Me.Range("A2").Font.Color = RGB(230, 0, 126)
+    Else
+        Me.Range("A2").Value = text
+        Me.Range("A2").Font.Color = colour
+    End If
+    mBusy = wasBusy
+    Application.StatusBar = False
+End Sub
+
+Private Sub Grid(c As Range)
+    Dim e As Variant
+    For Each e In Array(xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight)
+        With c.Borders(e)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+            .Color = vbWhite
+        End With
+    Next e
+End Sub
+
+Private Sub Box(c As Range, ByVal colour As Long)
+    Dim e As Variant
+    For Each e In Array(xlEdgeLeft, xlEdgeTop, xlEdgeBottom, xlEdgeRight)
+        With c.Borders(e)
+            .LineStyle = xlContinuous
+            .Weight = xlThick
+            .Color = colour
+        End With
+    Next e
+End Sub
+
+Private Sub Highlight(c As Range)
+    If mHi Is Nothing Then Set mHi = New Collection
+    Box c, RGB(230, 0, 126)
+    mHi.Add c.Address
+End Sub
+
+Private Sub ClearHighlights()
+    Dim a As Variant
+    If mHi Is Nothing Then Exit Sub
+    For Each a In mHi
+        Grid Me.Range(a)
+    Next a
+    Set mHi = New Collection
+End Sub
+
+Private Sub PushUndo(ByVal s As String)
+    If mUndo Is Nothing Then Set mUndo = New Collection
+    mUndo.Add s
+    If mUndo.Count > MAX_UNDO Then mUndo.Remove 1
+End Sub
+
+Private Sub LogIt(ByVal what As String, ByVal item As String, ByVal fromId As String, ByVal toId As String)
+    Dim ws As Worksheet, r As Long
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("Moves")
+    If ws Is Nothing Then Exit Sub
+    r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+    If r < 5 Then r = 5
+    ws.Cells(r, 1).Value = Now
+    ws.Cells(r, 1).NumberFormat = "dd/mm/yyyy hh:mm"
+    ws.Cells(r, 2).Value = Environ$("USERNAME")
+    ws.Cells(r, 3).Value = what
+    ws.Cells(r, 4).Value = item
+    ws.Cells(r, 5).Value = fromId
+    ws.Cells(r, 6).Value = toId
+End Sub
+
+' Draws the five buttons the first time they are needed
+Private Sub EnsureButtons()
+    Dim s As Shape, caps As Variant, macs As Variant, cols As Variant, i As Long, x As Double
+    On Error Resume Next
+    Set s = Me.Shapes("fmBtn0")
+    On Error GoTo 0
+    If Not s Is Nothing Then Exit Sub
+    caps = Array("Find space", "Find item", "Low stock", "Undo", "Clear")
+    macs = Array("FindSpace", "FindItem", "LowStock", "UndoLast", "ClearAll")
+    cols = Array(RGB(230, 0, 126), RGB(230, 0, 126), RGB(192, 0, 0), RGB(64, 64, 64), RGB(128, 128, 128))
+    x = Me.Columns(2).Left
+    For i = 0 To 4
+        Set s = Me.Shapes.AddShape(msoShapeRoundedRectangle, x, Me.Rows(3).Top + 2, 92, Me.Rows(3).Height - 4)
+        s.Name = "fmBtn" & i
+        s.Fill.ForeColor.RGB = cols(i)
+        s.Line.Visible = msoFalse
+        s.Placement = xlFreeFloating
+        s.OnAction = Me.CodeName & "." & macs(i)
+        With s.TextFrame2
+            .MarginTop = 0: .MarginBottom = 0
+            .VerticalAnchor = msoAnchorMiddle
+            .TextRange.Text = caps(i)
+            .TextRange.Font.Name = "Arial"
+            .TextRange.Font.Size = 10
+            .TextRange.Font.Bold = msoTrue
+            .TextRange.Font.Fill.ForeColor.RGB = vbWhite
+            .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End With
+        x = x + 98
+    Next i
+End Sub
