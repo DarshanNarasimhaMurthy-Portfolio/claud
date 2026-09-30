@@ -4,20 +4,30 @@
 # workbook is the place to make changes (then press "Rebuild Layout").
 # Edit this file only if you want to regenerate the workbook from scratch.
 #
-# Orientation: fire exit at the bottom of the map, loading bay at the top.
+# Real layout from the floor sketch (30 Sep 2026). Seen from above, the fire
+# exit is at one end of the main walkway and the loading bay at the other.
 # Side is as seen standing with the fire exit behind you, facing the bay.
 # Order counts from the fire exit end (1 = nearest the fire exit).
-# Each aisle is drawn as PalletsAcross rows by PalletsDeep columns, with depth
-# 01 next to the main walkway and depth running out towards the wall.
-# All PalletsDeep values are placeholders (16) until measured.
+# Each aisle is drawn as PalletsAcross rows (along the walkway) by
+# PalletsDeep columns (away from the walkway); depth 01 touches the walkway.
+#
+# Active: Yes = in use, No = hidden, Blocked = drawn as a grey "Not ours"
+# block (someone else's space) that cannot be clicked or filled.
+#
+# Measured: L aisles are 4 across x 16 deep. Assumed the same for R2-R4.
+# GUESSES to check: R1 (narrow) is 2 across; the Not-ours blocks are 6 and
+# 4 across; the zone for each aisle.
 
 aisles:
-  - {AisleID: L1, Side: Left,  Order: 1, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 1, Active: "Yes"}
-  - {AisleID: R1, Side: Right, Order: 1, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 1, Active: "Yes"}
-  - {AisleID: R2, Side: Right, Order: 2, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 1, Active: "Yes"}
-  - {AisleID: R3, Side: Right, Order: 3, PalletsAcross: 4, PalletsDeep: 16, Zone: FLM, GapAfter: 1, Active: "Yes"}
-  - {AisleID: R4, Side: Right, Order: 4, PalletsAcross: 4, PalletsDeep: 16, Zone: LBL, GapAfter: 1, Active: "Yes"}
-  - {AisleID: R5, Side: Right, Order: 5, PalletsAcross: 4, PalletsDeep: 16, Zone: BAG, GapAfter: 1, Active: "Yes"}
+  - {AisleID: XL, Side: Left,  Order: 1, PalletsAcross: 6, PalletsDeep: 16, Zone: "",  GapAfter: 0, Active: Blocked}
+  - {AisleID: L1, Side: Left,  Order: 2, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
+  - {AisleID: L2, Side: Left,  Order: 3, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
+  - {AisleID: L3, Side: Left,  Order: 4, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
+  - {AisleID: XR, Side: Right, Order: 1, PalletsAcross: 4, PalletsDeep: 16, Zone: "",  GapAfter: 0, Active: Blocked}
+  - {AisleID: R1, Side: Right, Order: 2, PalletsAcross: 2, PalletsDeep: 16, Zone: LBL, GapAfter: 0, Active: "Yes"}
+  - {AisleID: R2, Side: Right, Order: 3, PalletsAcross: 4, PalletsDeep: 16, Zone: FLM, GapAfter: 0, Active: "Yes"}
+  - {AisleID: R3, Side: Right, Order: 4, PalletsAcross: 4, PalletsDeep: 16, Zone: BAG, GapAfter: 0, Active: "Yes"}
+  - {AisleID: R4, Side: Right, Order: 5, PalletsAcross: 4, PalletsDeep: 16, Zone: BOX, GapAfter: 0, Active: "Yes"}
 
 zones:
   - {Code: BOX, Name: Boxes,              Colour: "#C8A165", Covers: "All box types"}
@@ -43,3 +53,4 @@ settings:
   NoZoneUsedGrey:  ["#A6A6A6", "Occupied positions that are not in any zone."]
   AlertRed:        ["#FF0000", "Wrong-zone border and low-stock marker."]
   FireExitGreen:   ["#00843D", "Fire exit label."]
+  NotOursGrey:     ["#BFBFBF", "Blocks marked Active = Blocked (someone else's space)."]

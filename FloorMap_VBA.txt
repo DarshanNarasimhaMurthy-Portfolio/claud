@@ -59,6 +59,7 @@ Private Type AisleRec
     deep As Long
     zone As String
     gap As Long
+    isBlocked As Boolean       ' Active = Blocked: someone else's space
 End Type
 Private Type LocRec
     id As String
@@ -75,6 +76,9 @@ Private Type LabelRec
     c1 As Long
     aisle As String
     zone As String
+    isBlocked As Boolean
+    rTop As Long               ' first and last row of the aisle's squares
+    rBot As Long
 End Type
 Private gLocs() As LocRec, gLocN As Long
 Private gLabels() As LabelRec, gLabelN As Long
@@ -546,8 +550,8 @@ Private Sub DrawLegend()
     r = r + 2
     LegendHeader r, lc, "KEY"
     keyText = Array("Pallet in place", "Free space kept for that zone", "Not in any zone", _
-                    "Wrong zone", "Selected, being moved", "Low stock item")
-    For k = 0 To 5
+                    "Not ours (someone else's)", "Wrong zone", "Selected, being moved", "Low stock item")
+    For k = 0 To 6
         r = r + 1
         Set cel = ws.Cells(r, lc)
         Select Case k
@@ -557,9 +561,10 @@ Private Sub DrawLegend()
                 cel.Interior.Color = vbWhite
                 cel.Interior.PatternColor = sample
             Case 2: cel.Interior.Color = cNoZone
-            Case 3: cel.Interior.Color = sample: SetEdges cel, xlThick, cRed
-            Case 4: cel.Interior.Color = sample: SetEdges cel, xlThick, vbBlack
-            Case 5
+            Case 3: cel.Interior.Color = SettingColour("NotOursGrey", RGB(191, 191, 191))
+            Case 4: cel.Interior.Color = sample: SetEdges cel, xlThick, cRed
+            Case 5: cel.Interior.Color = sample: SetEdges cel, xlThick, vbBlack
+            Case 6
                 cel.Interior.Color = sample
                 SetEdges cel, xlThin, vbWhite
                 With cel.Borders(xlEdgeBottom)
@@ -994,12 +999,16 @@ Private Function YesValue(ByVal v As Variant) As Boolean
     YesValue = (s = "yes" Or s = "y" Or s = "true" Or s = "1")
 End Function
 
+Private Function BlockedValue(ByVal v As Variant) As Boolean
+    BlockedValue = (LCase$(Trim$(CStr(v))) = "blocked")
+End Function
+
 ' Reads tblAisles. Returns "" if fine, or a message describing the problem.
 ' Zone codes that are not in tblZones are returned in warns (not fatal).
 Private Function ReadAisles(aisles() As AisleRec, n As Long, warns As String) As String
     Dim lo As ListObject, rows As Long, i As Long, j As Long, errs As String, a As AisleRec
     Dim vId As Variant, vSide As Variant, vOrd As Variant, vAcr As Variant, vDeep As Variant
-    Dim vZone As Variant, vGap As Variant, vAct As Variant, ch As String, k As Long
+    Dim vZone As Variant, vGap As Variant, vAct As Variant, ch As String, k As Long, usable As Long
 
     Set lo = AislesT
     rows = RowCount(lo)
@@ -1014,8 +1023,10 @@ Private Function ReadAisles(aisles() As AisleRec, n As Long, warns As String) As
     vZone = ColValues(lo, "Zone"): vGap = ColValues(lo, "GapAfter"): vAct = ColValues(lo, "Active")
 
     For i = 1 To rows
-        If Trim$(CStr(vId(i, 1))) <> "" And YesValue(vAct(i, 1)) Then
+        If Trim$(CStr(vId(i, 1))) <> "" And (YesValue(vAct(i, 1)) Or BlockedValue(vAct(i, 1))) Then
             a.id = Trim$(CStr(vId(i, 1)))
+            a.isBlocked = BlockedValue(vAct(i, 1))
+            If Not a.isBlocked Then usable = usable + 1
             For k = 1 To Len(a.id)
                 ch = Mid$(a.id, k, 1)
                 If Not (ch Like "[A-Za-z0-9]") Then errs = errs & vbLf & "Aisle '" & a.id & "': use letters and numbers only.": Exit For
@@ -1033,7 +1044,7 @@ Private Function ReadAisles(aisles() As AisleRec, n As Long, warns As String) As
             If IsNumeric(vGap(i, 1)) And Not IsEmpty(vGap(i, 1)) Then a.gap = CLng(vGap(i, 1)) Else a.gap = 0
             If a.gap < 0 Then a.gap = 0
             a.zone = Trim$(CStr(vZone(i, 1)))
-            If a.zone <> "" And ZoneIndex(a.zone) = 0 Then
+            If a.zone <> "" And ZoneIndex(a.zone) = 0 And Not a.isBlocked Then
                 warns = warns & vbLf & "Aisle " & a.id & ": zone '" & a.zone & "' is not in the Zones table."
             End If
             For j = 1 To n
@@ -1043,7 +1054,7 @@ Private Function ReadAisles(aisles() As AisleRec, n As Long, warns As String) As
             aisles(n) = a
         End If
     Next i
-    If n = 0 And errs = "" Then errs = vbLf & "No aisles are marked Active = Yes."
+    If usable = 0 And errs = "" Then errs = vbLf & "No aisles are marked Active = Yes."
     ReadAisles = errs
 End Function
 
@@ -1084,7 +1095,7 @@ Private Sub ComputeLayout(aisles() As AisleRec, ByVal n As Long, ByVal walkway A
 
     h = hl
     If hr > h Then h = hr
-    If 14 + cZoneN > h Then h = 14 + cZoneN              ' room for the legend
+    If 15 + cZoneN > h Then h = 15 + cZoneN              ' room for the legend
     gBottom = ROW_AREA_TOP + h - 1
     gWalkStart = 2 + lw
     gWalkEnd = gWalkStart + walkway - 1
@@ -1108,11 +1119,16 @@ Private Sub ComputeLayout(aisles() As AisleRec, ByVal n As Long, ByVal walkway A
             gLabels(gLabelN).r = labelRow
             gLabels(gLabelN).aisle = a.id
             gLabels(gLabelN).zone = a.zone
+            gLabels(gLabelN).isBlocked = a.isBlocked
+            gLabels(gLabelN).rTop = topData
+            gLabels(gLabelN).rBot = topData + a.across - 1
             If a.sideCode = "L" Then
                 gLabels(gLabelN).c0 = gWalkStart - a.deep: gLabels(gLabelN).c1 = gWalkStart - 1
             Else
                 gLabels(gLabelN).c0 = gRightStart: gLabels(gLabelN).c1 = gRightStart + a.deep - 1
             End If
+            cur = labelRow - 1 - a.gap
+            If a.isBlocked Then GoTo NextAisle          ' drawn, but no pallet positions
             ReDim Preserve gLocs(1 To gLocN + a.across * a.deep)
             For k = 0 To a.across - 1
                 For d = 1 To a.deep
@@ -1128,7 +1144,7 @@ Private Sub ComputeLayout(aisles() As AisleRec, ByVal n As Long, ByVal walkway A
                     End With
                 Next d
             Next k
-            cur = labelRow - 1 - a.gap
+NextAisle:
         Next i
     Next s
 End Sub
@@ -1252,6 +1268,7 @@ Private Sub DrawMap(ByVal px As Long)
             If .c1 > .c0 Then rng.Merge
             z = ZoneIndex(.zone)
             If z > 0 Then nm = cZoneName(z) Else nm = "No zone"
+            If .isBlocked Then nm = "Not ours"
             If .c1 - .c0 >= 5 Then rng.Cells(1, 1).Value = .aisle & "  " & nm Else rng.Cells(1, 1).Value = .aisle
             rng.Font.Name = "Arial": rng.Font.Size = 8: rng.Font.Bold = True
             rng.HorizontalAlignment = xlLeft
@@ -1259,6 +1276,17 @@ Private Sub DrawMap(ByVal px As Long)
             With rng.Borders(xlEdgeBottom)
                 .LineStyle = xlContinuous: .Weight = xlThin: .Color = brand
             End With
+            ' Someone else's space: one grey merged block that cannot be clicked
+            If .isBlocked Then
+                With ws.Range(ws.Cells(.rTop, .c0), ws.Cells(.rBot, .c1))
+                    .Merge
+                    .Cells(1, 1).Value = "NOT OURS"
+                    .Interior.Color = SettingColour("NotOursGrey", RGB(191, 191, 191))
+                    .Font.Name = "Arial": .Font.Size = 8: .Font.Bold = True: .Font.Color = RGB(128, 128, 128)
+                    .HorizontalAlignment = xlCenter
+                    .VerticalAlignment = xlCenter
+                End With
+            End If
         End With
     Next i
 

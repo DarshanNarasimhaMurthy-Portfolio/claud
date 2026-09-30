@@ -112,7 +112,7 @@ In the Aisles table:
 | Side | Left or Right, as seen standing with the fire exit behind you, facing the loading bay. |
 | Order | 1 is the aisle nearest the fire exit. |
 | GapAfter | Blank walkway rows between this aisle and the next one towards the bay. |
-| Active | Set to **No** to hide an aisle without deleting it. |
+| Active | **Yes** = in use. **No** = hidden without deleting it. **Blocked** = someone else's space: drawn as a grey "NOT OURS" block that can't be clicked or filled. |
 
 Other things to know:
 
@@ -121,7 +121,17 @@ Other things to know:
 - Rows are lettered A, B, C... from the top.
 - To add an aisle, add a row to the table.
 
-> **Please check the starting layout.** It is a placeholder. All aisles are 16 deep, and the aisles run outwards from a central walkway. If the real aisles run the other way, tell the person who built the file and the drawing rules can be changed.
+> **Please check the starting layout.** It follows your floor sketch:
+>
+> - **Left side**, from the fire exit: XL (someone else's, Blocked), then L1, L2, L3. Each is 4 across x 16 deep.
+> - **Right side**, from the fire exit: XR (someone else's, Blocked), then R1 (the narrow one), R2, R3, R4.
+>
+> These are **guesses** to check and correct on Config:
+>
+> - R1 is 2 across.
+> - R2 to R4 are 4 x 16, like the left.
+> - The Blocked areas are 6 across (left) and 4 across (right).
+> - The zones: L1 to L3 and R4 are Boxes, R1 is Labels and Packing, R2 is Films and Wrap, R3 is Bags.
 
 ### Zones and colours
 

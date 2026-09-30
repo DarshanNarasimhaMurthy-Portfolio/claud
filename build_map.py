@@ -79,6 +79,10 @@ def yes(v):
     return str(v).strip().lower() in ("yes", "y", "true", "1")
 
 
+def blocked(v):
+    return str(v).strip().lower() == "blocked"
+
+
 def f(size=10, bold=False, color="000000", italic=False):
     return Font(name=FONT, size=size, bold=bold, color=hx(color), italic=italic)
 
@@ -165,7 +169,7 @@ def compute_layout(aisles, zones, walkway):
     followed by PalletsAcross rows (column letters A, B, C... top to bottom)
     of PalletsDeep squares; depth 01 touches the main walkway.
     """
-    act = [a for a in aisles if yes(a.get("Active", "Yes"))]
+    act = [a for a in aisles if yes(a.get("Active", "Yes")) or blocked(a.get("Active"))]
     left = sorted([a for a in act if str(a["Side"]).strip().lower().startswith("l")], key=lambda a: int(a["Order"]))
     right = sorted([a for a in act if str(a["Side"]).strip().lower().startswith("r")], key=lambda a: int(a["Order"]))
     lw = max([int(a["PalletsDeep"]) for a in left] or [0])
@@ -174,7 +178,7 @@ def compute_layout(aisles, zones, walkway):
     def side_height(lst):
         return sum(1 + int(a["PalletsAcross"]) + int(a.get("GapAfter") or 0) for a in lst)
 
-    legend_rows = 14 + len(zones)
+    legend_rows = 15 + len(zones)
     h = max(side_height(left), side_height(right), legend_rows)
     bottom = ROW_AREA_TOP + h - 1
     walk_start = 2 + lw
@@ -184,7 +188,7 @@ def compute_layout(aisles, zones, walkway):
     legend_col = map_last_col + 2
     last_col = legend_col + LEGEND_COLS - 1
 
-    positions, labels = [], []
+    positions, labels, blocks = [], [], []
     for side_code, lst in (("L", left), ("R", right)):
         cur = bottom
         for a in lst:
@@ -195,6 +199,12 @@ def compute_layout(aisles, zones, walkway):
                 span = (walk_start - deep, walk_start - 1)
             else:
                 span = (right_start, right_start + deep - 1)
+            labels.append((label_row, span, a))
+            cur = label_row - 1 - int(a.get("GapAfter") or 0)
+            if blocked(a.get("Active")):
+                # someone else's space: drawn, but no pallet positions
+                blocks.append((top_data, top_data + across - 1, span, a))
+                continue
             for k in range(across):
                 letter = chr(65 + k)
                 for d in range(1, deep + 1):
@@ -205,11 +215,9 @@ def compute_layout(aisles, zones, walkway):
                         "Zone": str(a.get("Zone") or ""),
                         "MapRow": top_data + k, "MapCol": c,
                     })
-            labels.append((label_row, span, a))
-            cur = label_row - 1 - int(a.get("GapAfter") or 0)
     # Stable order: aisles as listed, then depth, then column
     return {
-        "positions": positions, "labels": labels, "h": h, "bottom": bottom,
+        "positions": positions, "labels": labels, "blocks": blocks, "h": h, "bottom": bottom,
         "walk_start": walk_start, "walk_end": walk_end, "right_start": right_start,
         "map_last_col": map_last_col, "legend_col": legend_col, "last_col": last_col,
         "fire_row": bottom + 2, "has_left": bool(left), "has_right": bool(right),
@@ -242,7 +250,7 @@ def build_config(wb, ws, cfg, s):
     last = HDR_ROW + len(aisles)
     dv = DataValidation(type="list", formula1='"Left,Right"', allow_blank=False)
     dv.add(f"B{HDR_ROW + 1}:B{last + 40}")
-    dv2 = DataValidation(type="list", formula1='"Yes,No"', allow_blank=False)
+    dv2 = DataValidation(type="list", formula1='"Yes,No,Blocked"', allow_blank=False)
     dv2.add(f"H{HDR_ROW + 1}:H{last + 40}")
     dv3 = DataValidation(type="list", formula1="ZoneCodes", allow_blank=True)
     dv3.add(f"F{HDR_ROW + 1}:F{last + 40}")
@@ -255,6 +263,8 @@ def build_config(wb, ws, cfg, s):
             "Order: 1 = nearest the fire exit.").font = f(8, italic=True, color="595959")
     ws.cell(last + 3, 1, "Depth 01 is next to the main walkway. Column letters run A, B, C... from the "
             "top of each aisle on the Map.").font = f(8, italic=True, color="595959")
+    ws.cell(last + 4, 1, "Active: Yes = in use, No = hidden, Blocked = someone else's space, drawn grey "
+            "and cannot be used.").font = f(8, italic=True, color="595959")
 
     # Zones
     zc = 10  # column J
@@ -658,12 +668,22 @@ def build_map(wb, ws, s, geo, zones, positions, item_zone, low_items, size, zoom
     for label_row, (c0, c1), a in geo["labels"]:
         if c1 > c0:
             ws.merge_cells(start_row=label_row, start_column=c0, end_row=label_row, end_column=c1)
-        name = zone_names.get(str(a.get("Zone") or ""), "No zone")
+        name = "Not ours" if blocked(a.get("Active")) else zone_names.get(str(a.get("Zone") or ""), "No zone")
         c = ws.cell(label_row, c0, f"{a['AisleID']}  {name}" if c1 - c0 >= 5 else str(a["AisleID"]))
         c.font = f(8, True, "000000")
         c.alignment = Alignment(horizontal="left", vertical="bottom")
         for col in range(c0, c1 + 1):
             ws.cell(label_row, col).border = Border(bottom=side("thin", s["BrandAccent"]))
+
+    # Someone else's space: one grey block, not clickable (merged)
+    for r0, r1, (c0, c1), a in geo["blocks"]:
+        ws.merge_cells(start_row=r0, start_column=c0, end_row=r1, end_column=c1)
+        c = ws.cell(r0, c0, "NOT OURS")
+        c.font = f(8, True, "808080")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        for rr in range(r0, r1 + 1):
+            for cc in range(c0, c1 + 1):
+                ws.cell(rr, cc).fill = solid(s["NotOursGrey"])
 
     # Pallet squares: formula shows the (short) item code live from tblLocations
     zone_colours = {z["Code"]: z["Colour"] for z in zones}
@@ -727,6 +747,7 @@ def build_map(wb, ws, s, geo, zones, positions, item_zone, low_items, size, zoom
         ("Pallet in place", solid(sample), None),
         ("Free space kept for that zone", PatternFill(fill_type="lightUp", start_color=hx(sample), end_color="FFFFFF"), None),
         ("Not in any zone", solid(s["NoZoneGrey"]), None),
+        ("Not ours (someone else's)", solid(s["NotOursGrey"]), None),
         ("Wrong zone", solid(sample), Border(left=red, right=red, top=red, bottom=red)),
         ("Selected, being moved", solid(sample), Border(*(side("thick", "000000"),) * 4)),
         ("Low stock item", solid(sample), Border(left=white, right=white, top=white, bottom=red)),
@@ -772,12 +793,12 @@ DEMO_ITEMS = [
     {"ItemCode": "BG-M", "Description": "Poly mailing bag medium", "Zone": "BAG", "UnitsPerPallet": 2000, "OnHandUnits": 9000},
 ]
 DEMO_PLACEMENTS = {
-    "R1-01-A": ("BX-S", None), "R1-02-A": ("BX-S", None), "R1-03-A": ("BX-S", None), "R1-04-A": ("BX-S", 300),
+    "R4-01-A": ("BX-S", None), "R4-02-A": ("BX-S", None), "R4-03-A": ("BX-S", None), "R4-04-A": ("BX-S", 300),
     "L1-01-A": ("BX-L", None), "L1-02-A": ("BX-L", None),
-    "R3-01-A": ("PW-17", None), "R3-01-B": ("PW-17", None),
-    "R4-01-A": ("LB-A6", None),
-    "R5-01-A": ("BG-M", None), "R5-02-A": ("BG-M", None), "R5-03-A": ("BG-M", None),
-    "R2-05-C": ("BG-M", None),          # deliberately in the wrong zone
+    "R2-01-A": ("PW-17", None), "R2-01-B": ("PW-17", None),
+    "R1-01-A": ("LB-A6", None),
+    "R3-01-A": ("BG-M", None), "R3-02-A": ("BG-M", None), "R3-03-A": ("BG-M", None),
+    "L2-05-C": ("BG-M", None),          # deliberately in the wrong zone
 }
 
 EXAMPLE_ITEMS = [
