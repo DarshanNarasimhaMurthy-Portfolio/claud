@@ -35,7 +35,7 @@ const doc = new Document({ styles: { default: { document: { run: { font: FONT, s
   children: [
     new Paragraph({ spacing: { after: 40 }, children: [t("Floor Map: how to use", { size: 48, bold: true })] }),
     new Paragraph({ spacing: { after: 260 }, border: { bottom: { style: BorderStyle.SINGLE, size: 24, color: MAG, space: 6 } },
-      children: [t("Open Floor_Map_Simple.xlsx. No macros, nothing to set up.", { size: 26, color: "595959" })] }),
+      children: [t("Open Floor_Map_Simple.xlsx. No macros, nothing to set up. Everything is counted in pallets.", { size: 26, color: "595959" })] }),
     box("PUT A PALLET AWAY", "00843D", ["Click a square on the **Map**.", "Click the **little arrow** next to it.", "Pick the item. The square fills with colour."]),
     gap(),
     box("TAKE A PALLET OUT", "C00000", ["Click the square.", "Press **Delete**. The square goes back to stripes."]),

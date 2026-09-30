@@ -41,17 +41,17 @@ def build(cfg, out, demo):
     geo = compute_layout(cfg["aisles"], zones, int(s["WalkwayCells"]))
 
     items = [
-        {"Item code": "EX-BOX", "Description": "EXAMPLE - type over me", "Zone": "BOX", "Units per pallet": 400},
-        {"Item code": "EX-WRAP", "Description": "EXAMPLE - type over me", "Zone": "FLM", "Units per pallet": 200},
+        {"Item code": "EX-BOX", "Description": "EXAMPLE - type over me", "Zone": "BOX"},
+        {"Item code": "EX-WRAP", "Description": "EXAMPLE - type over me", "Zone": "FLM"},
     ]
     placed = {}
     if demo:
         items = [
-            {"Item code": "BX-S", "Description": "Small box", "Zone": "BOX", "Units per pallet": 500},
-            {"Item code": "BX-L", "Description": "Large box", "Zone": "BOX", "Units per pallet": 150, "Low when pallets at or below": 3},
-            {"Item code": "WRAP", "Description": "Pallet wrap", "Zone": "FLM", "Units per pallet": 240},
-            {"Item code": "LBL6", "Description": "A6 labels", "Zone": "LBL", "Units per pallet": 96},
-            {"Item code": "BAG-M", "Description": "Medium bag", "Zone": "BAG", "Units per pallet": 2000},
+            {"Item code": "BX-S", "Description": "Small box", "Zone": "BOX"},
+            {"Item code": "BX-L", "Description": "Large box", "Zone": "BOX", "Low when pallets at or below": 3},
+            {"Item code": "WRAP", "Description": "Pallet wrap", "Zone": "FLM"},
+            {"Item code": "LBL6", "Description": "A6 labels", "Zone": "LBL"},
+            {"Item code": "BAG-M", "Description": "Medium bag", "Zone": "BAG"},
         ]
         placed = {"R4-01-A": "BX-S", "R4-02-A": "BX-S", "R4-03-A": "BX-S", "L1-01-A": "BX-L",
                   "R2-01-A": "WRAP", "R2-01-B": "WRAP", "R1-01-A": "LBL6", "R3-01-A": "BAG-M",
@@ -68,30 +68,27 @@ def build(cfg, out, demo):
 
     # ------------------------------------------------------------ Stock sheet
     st.sheet_view.showGridLines = False
-    st.merge_cells("A1:H1")
+    st.merge_cells("A1:F1")
     c = st["A1"]
     c.value = "Stock"
     c.font = f(18, True, "FFFFFF")
     c.alignment = Alignment(vertical="center", indent=1)
-    for col in range(1, 9):
+    for col in range(1, 7):
         st.cell(1, col).fill = solid("000000")
         st.cell(1, col).border = Border(bottom=side("thick", s["BrandAccent"]))
     st.row_dimensions[1].height = 34
-    st.merge_cells("A2:H2")
-    st["A2"].value = ("Type your items in the white columns. Grey columns fill in by themselves. "
+    st.merge_cells("A2:F2")
+    st["A2"].value = ("Everything is counted in PALLETS. Type your items in the white columns; grey columns fill in by themselves. "
                       "Add a new item on the first empty row.")
     st["A2"].font = f(11, color="404040")
     st["A2"].alignment = Alignment(vertical="center", indent=1, wrap_text=True)
     st.row_dimensions[2].height = 30
 
-    heads = ["Item code", "Description", "Zone", "Units per pallet", "Low when pallets at or below",
-             "Pallets on map", "Units on map", "Status"]
+    heads = ["Item code", "Description", "Zone", "Low when pallets at or below", "Pallets on map", "Status"]
     map_rng = f"Map!$A${ROW_AREA_TOP}:${L(geo['map_last_col'])}${geo['bottom']}"
     tr = lambda col: f"tblStock[[#This Row],[{col}]]"
     calc = {
         "Pallets on map": f'IF({tr("Item code")}="","",COUNTIF({map_rng},{tr("Item code")}))',
-        "Units on map": f'IF(OR({tr("Item code")}="",N({tr("Units per pallet")})=0),"",'
-                        f'{tr("Pallets on map")}*{tr("Units per pallet")})',
         "Status": f'IF({tr("Item code")}="","",IF({tr("Pallets on map")}<='
                   f'IF({tr("Low when pallets at or below")}="",{int(s["DefaultLowStock"])},'
                   f'{tr("Low when pallets at or below")}),"LOW","OK"))',
@@ -112,7 +109,7 @@ def build(cfg, out, demo):
             cc.font = f(12, h in ("Item code", "Status"))
             cc.alignment = Alignment(horizontal="left" if h == "Description" else "center", vertical="center")
         st.row_dimensions[r].height = 22
-    t = Table(displayName="tblStock", ref=f"A{hr}:H{hr + n}")
+    t = Table(displayName="tblStock", ref=f"A{hr}:F{hr + n}")
     cols = []
     for j, h in enumerate(heads):
         tc = TableColumn(id=j + 1, name=h)
@@ -122,20 +119,20 @@ def build(cfg, out, demo):
     t.tableColumns = cols
     t.tableStyleInfo = TableStyleInfo(name="TableStyleMedium15", showRowStripes=True)
     st.add_table(t)
-    for j, w in enumerate([14, 34, 9, 11, 14, 11, 11, 10]):
+    for j, w in enumerate([14, 36, 9, 16, 12, 11]):
         st.column_dimensions[L(j + 1)].width = w
     dv = DataValidation(type="list", formula1=f'"{",".join(z["Code"] for z in zones)}"', allow_blank=True)
     dv.add(f"C{hr + 1}:C{hr + 300}")
     st.add_data_validation(dv)
     red = PatternFill(fill_type="solid", start_color="FFD9D9", end_color="FFD9D9")
-    st.conditional_formatting.add(f"H{hr + 1}:H{hr + 300}", FormulaRule(
-        formula=[f'H{hr + 1}="LOW"'], fill=red, font=Font(color="C00000", bold=True)))
-    st.conditional_formatting.add(f"H{hr + 1}:H{hr + 300}", FormulaRule(
-        formula=[f'H{hr + 1}="OK"'], font=Font(color="00843D", bold=True)))
+    st.conditional_formatting.add(f"F{hr + 1}:F{hr + 300}", FormulaRule(
+        formula=[f'F{hr + 1}="LOW"'], fill=red, font=Font(color="C00000", bold=True)))
+    st.conditional_formatting.add(f"F{hr + 1}:F{hr + 300}", FormulaRule(
+        formula=[f'F{hr + 1}="OK"'], font=Font(color="00843D", bold=True)))
     st.freeze_panes = f"B{hr + 1}"
 
     # Zone key + free space, to the right
-    zc = 10
+    zc = 8
     st.column_dimensions[L(zc)].width = 22
     for j, w in enumerate([10, 10, 10]):
         st.column_dimensions[L(zc + 1 + j)].width = w
@@ -181,7 +178,7 @@ def build(cfg, out, demo):
         ws.cell(1, col).fill = solid("000000")
         ws.cell(1, col).border = Border(bottom=side("thick", s["BrandAccent"]))
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last)
-    c = ws.cell(2, 1, "Click a square  ▶  click the little arrow  ▶  pick the item.      "
+    c = ws.cell(2, 1, "Click a square  →  click the little arrow  →  pick the item.      "
                       "To empty a square: click it and press Delete.")
     c.font = f(12, True, s["BrandAccent"])
     c.alignment = Alignment(vertical="center", indent=1)
