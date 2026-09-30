@@ -7,6 +7,8 @@
 '   2. Press Alt + F11.
 '   3. On the left, double-click the sheet that says (Map).
 '   4. Copy EVERYTHING below the line of stars and paste it in.
+'      (Pasted an older version before? Click in the code, Ctrl+A, Delete,
+'       then paste this one.)
 '   5. Close the window. Click any square on the Map - the buttons appear.
 '   6. Ctrl + S to save.
 '
@@ -14,7 +16,8 @@
 '   * MOVE    - double-click a pallet, then click where it goes
 '               (click another pallet to swap, Esc or Clear to cancel)
 '   * PUT AWAY- double-click an empty square and pick from a list
-'   * Buttons - Find space / Find item / Low stock / Undo / Clear
+'   * Buttons - Find space / Find item / Low stock / Undo / Clear / Rebuild map
+'   * Change aisle sizes on the Layout sheet, then press Rebuild map
 '   * Every change is written to the Moves sheet, and Undo can reverse it
 '======================================================================
 '**********************************************************************
@@ -33,6 +36,16 @@ Private mHi As Collection                   ' squares with a pink highlight
 
 Private sqId() As String, sqZone() As String
 Private sqRow() As Long, sqCol() As Long, sqDepth() As Long, sqN As Long
+
+' Used by Rebuild map
+Private Const TOP_ROW As Long = 6           ' first row of aisles on the Map
+Private Const WALK As Long = 3              ' walkway width in squares
+Private Const LEG_COLS As Long = 10         ' legend width in squares
+Private Const SQ_PX As Long = 28            ' square size in pixels
+
+Private gBottom As Long, gWalkS As Long, gWalkE As Long, gRightS As Long
+Private gMapLast As Long, gLegend As Long, gLast As Long, gFire As Long
+Private zCode() As String, zN As Long
 
 
 '======================================================================
@@ -593,14 +606,17 @@ End Sub
 Private Sub EnsureButtons()
     Dim s As Shape, caps As Variant, macs As Variant, cols As Variant, i As Long, x As Double
     On Error Resume Next
-    Set s = Me.Shapes("fmBtn0")
+    Set s = Me.Shapes("fmBtn5")
     On Error GoTo 0
     If Not s Is Nothing Then Exit Sub
-    caps = Array("Find space", "Find item", "Low stock", "Undo", "Clear")
-    macs = Array("FindSpace", "FindItem", "LowStock", "UndoLast", "ClearAll")
-    cols = Array(RGB(230, 0, 126), RGB(230, 0, 126), RGB(192, 0, 0), RGB(64, 64, 64), RGB(128, 128, 128))
+    For i = Me.Shapes.Count To 1 Step -1
+        If Left$(Me.Shapes(i).Name, 5) = "fmBtn" Then Me.Shapes(i).Delete
+    Next i
+    caps = Array("Find space", "Find item", "Low stock", "Undo", "Clear", "Rebuild map")
+    macs = Array("FindSpace", "FindItem", "LowStock", "UndoLast", "ClearAll", "RebuildMap")
+    cols = Array(RGB(230, 0, 126), RGB(230, 0, 126), RGB(192, 0, 0), RGB(64, 64, 64), RGB(128, 128, 128), RGB(0, 112, 192))
     x = Me.Columns(2).Left
-    For i = 0 To 4
+    For i = 0 To 5
         Set s = Me.Shapes.AddShape(msoShapeRoundedRectangle, x, Me.Rows(3).Top + 2, 92, Me.Rows(3).Height - 4)
         s.Name = "fmBtn" & i
         s.Fill.ForeColor.RGB = cols(i)
@@ -619,4 +635,479 @@ Private Sub EnsureButtons()
         End With
         x = x + 98
     Next i
+    ' A Rebuild map button on the Layout sheet too
+    On Error Resume Next
+    With ThisWorkbook.Worksheets("Layout")
+        .Shapes("fmLayoutBtn").Delete
+        Set s = .Shapes.AddShape(msoShapeRoundedRectangle, .Range("I5").Left, .Range("I5").Top, 150, 34)
+        s.Name = "fmLayoutBtn"
+        s.Fill.ForeColor.RGB = RGB(0, 112, 192)
+        s.Line.Visible = msoFalse
+        s.OnAction = Me.CodeName & ".RebuildMap"
+        With s.TextFrame2
+            .VerticalAnchor = msoAnchorMiddle
+            .TextRange.Text = "REBUILD MAP"
+            .TextRange.Font.Name = "Arial"
+            .TextRange.Font.Size = 12
+            .TextRange.Font.Bold = msoTrue
+            .TextRange.Font.Fill.ForeColor.RGB = vbWhite
+            .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        End With
+    End With
 End Sub
+
+
+'======================================================================
+'  REBUILD MAP  - redraws the Map from the table on the Layout sheet.
+'  Pallets stay in their squares (by square name, e.g. L2-05-C).
+'  Any that no longer fit are listed and written to the Moves sheet.
+'======================================================================
+
+Public Sub RebuildMap()
+    Dim lo As ListObject, n As Long, i As Long, j As Long, k As Long, d As Long, t As Long
+    Dim aId() As String, aSide() As String, aOrd() As Double, aRows() As Long, aDeep() As Long
+    Dim aZone() As String, aBlk() As Boolean, na As Long, errs As String, use As String
+    Dim idx() As Long, ni As Long, sd As Long, lw As Long, rw As Long, hL As Long, hR As Long, h As Long
+    Dim cur As Long, topR As Long, c0 As Long, c1 As Long, lbl As Range, rng As Range, tl As String
+    Dim keepId() As String, keepItem() As String, nk As Long, placed() As Boolean, v As String
+    Dim newN As Long, sqs As Worksheet, lost As String, nLost As Long, zi As Long
+    Dim zTotal() As Long, zUsed() As String, colour As Long, fc As FormatCondition, m As Long
+
+    If MsgBox("Redraw the Map from the Layout sheet?" & vbLf & vbLf & _
+              "Pallets stay where they are. Any that no longer fit will be listed.", _
+              vbYesNo + vbQuestion, "Rebuild map") = vbNo Then Exit Sub
+    On Error GoTo Fail
+    CancelMove
+    ClearHighlights
+    LoadZones
+
+    ' ---- 1. read and check the Layout table
+    Set lo = ThisWorkbook.Worksheets("Layout").ListObjects("tblLayout")
+    If lo.DataBodyRange Is Nothing Then
+        MsgBox "The Layout table is empty.", vbExclamation, "Rebuild map"
+        Exit Sub
+    End If
+    n = lo.ListRows.Count
+    ReDim aId(1 To n): ReDim aSide(1 To n): ReDim aOrd(1 To n): ReDim aRows(1 To n)
+    ReDim aDeep(1 To n): ReDim aZone(1 To n): ReDim aBlk(1 To n)
+    For i = 1 To n
+        use = LCase$(LVal(lo, i, "Use"))
+        If LVal(lo, i, "Aisle") <> "" And (use = "yes" Or use = "blocked") Then
+            na = na + 1
+            aId(na) = LVal(lo, i, "Aisle")
+            aSide(na) = UCase$(Left$(LVal(lo, i, "Side"), 1))
+            aOrd(na) = Val(LVal(lo, i, "Order from fire exit"))
+            aRows(na) = CLng(Val(LVal(lo, i, "Rows")))
+            aDeep(na) = CLng(Val(LVal(lo, i, "Pallets deep")))
+            aZone(na) = UCase$(LVal(lo, i, "Zone"))
+            aBlk(na) = (use = "blocked")
+            If aSide(na) <> "L" And aSide(na) <> "R" Then errs = errs & vbLf & aId(na) & ": Side must be Left or Right."
+            If aRows(na) < 1 Or aRows(na) > 26 Then errs = errs & vbLf & aId(na) & ": Rows must be 1 to 26."
+            If aDeep(na) < 1 Or aDeep(na) > 60 Then errs = errs & vbLf & aId(na) & ": Pallets deep must be 1 to 60."
+            If Not aBlk(na) And aZone(na) <> "" And Not NameExists("dd_" & aZone(na)) Then
+                errs = errs & vbLf & aId(na) & ": zone '" & aZone(na) & "' is not a zone code."
+            End If
+            For j = 1 To na - 1
+                If StrComp(aId(j), aId(na), vbTextCompare) = 0 Then errs = errs & vbLf & aId(na) & " is listed twice."
+            Next j
+        End If
+    Next i
+    If na = 0 Then errs = errs & vbLf & "No aisles have Use = Yes."
+    If errs <> "" Then
+        MsgBox "Please fix the Layout sheet first:" & vbLf & errs, vbExclamation, "Rebuild map"
+        Exit Sub
+    End If
+
+    ' ---- 2. remember what is on the map now
+    LoadSquares
+    ReDim keepId(1 To sqN + 1): ReDim keepItem(1 To sqN + 1)
+    For i = 1 To sqN
+        v = CellText(Me.Cells(sqRow(i), sqCol(i)))
+        If v <> "" Then
+            nk = nk + 1
+            keepId(nk) = sqId(i)
+            keepItem(nk) = v
+        End If
+    Next i
+    ReDim placed(1 To nk + 1)
+
+    ' ---- 3. work out the size of everything (fire exit at the bottom, bay at the top)
+    For i = 1 To na
+        If aSide(i) = "L" Then
+            If aDeep(i) > lw Then lw = aDeep(i)
+            hL = hL + 1 + aRows(i)
+        Else
+            If aDeep(i) > rw Then rw = aDeep(i)
+            hR = hR + 1 + aRows(i)
+        End If
+    Next i
+    h = hL: If hR > h Then h = hR
+    If 15 + zN > h Then h = 15 + zN
+    gBottom = TOP_ROW + h - 1
+    gWalkS = 2 + lw
+    gWalkE = gWalkS + WALK - 1
+    gRightS = gWalkE + 1
+    gMapLast = gWalkE: If gRightS + rw - 1 > gMapLast Then gMapLast = gRightS + rw - 1
+    gLegend = gMapLast + 2
+    gLast = gLegend + LEG_COLS - 1
+    gFire = gBottom + 2
+
+    ' ---- 4. wipe the old drawing
+    mBusy = True
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Me.Activate
+    With Me.Cells
+        .UnMerge
+        .Validation.Delete
+        .FormatConditions.Delete
+        .ClearComments
+        .Clear
+        .ColumnWidth = Me.StandardWidth
+        .RowHeight = Me.StandardHeight
+    End With
+    Set mUndo = New Collection
+
+    ' square cells
+    Me.Columns(1).ColumnWidth = SQ_PX / 7
+    For k = 1 To 3
+        Me.Columns(1).ColumnWidth = Me.Columns(1).ColumnWidth * (SQ_PX * 0.75) / Me.Columns(1).Width
+    Next k
+    Me.Range(Me.Columns(1), Me.Columns(gLast)).ColumnWidth = Me.Columns(1).ColumnWidth
+    Me.Rows(1).RowHeight = 30
+    Me.Rows(2).RowHeight = 22
+    Me.Rows(3).RowHeight = 24
+    Me.Range(Me.Rows(4), Me.Rows(gFire)).RowHeight = SQ_PX * 0.75
+
+    ' ---- 5. title, message line, bay, fire exit, walkway
+    With Me.Range(Me.Cells(1, 1), Me.Cells(1, gLast))
+        .Merge
+        .Cells(1, 1).Value = "Consumables Floor Map, Sherburn"
+        .Font.Name = "Arial": .Font.Size = 18: .Font.Bold = True: .Font.Color = vbWhite
+        .Interior.Color = vbBlack
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+        With .Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous: .Weight = xlThick: .Color = RGB(230, 0, 126)
+        End With
+    End With
+    With Me.Range(Me.Cells(2, 1), Me.Cells(2, gLast))
+        .Merge
+        .Font.Name = "Arial": .Font.Size = 12: .Font.Bold = True
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+    End With
+    SetMsg "", 0
+    mBusy = True
+    Bar 4, "LOADING BAY", vbBlack
+    Bar gFire, "FIRE EXIT", RGB(0, 132, 61)
+    With Me.Range(Me.Cells(TOP_ROW, gWalkS), Me.Cells(gBottom, gWalkE))
+        .Merge
+        .Cells(1, 1).Value = "WALKWAY"
+        .Orientation = 90
+        .Font.Name = "Arial": .Font.Size = 12: .Font.Bold = True: .Font.Color = RGB(191, 191, 191)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' ---- 6. aisles, stacked up from the fire exit on each side
+    ReDim zTotal(1 To zN + 1): ReDim zUsed(1 To zN + 1)
+    newN = 0
+    Set sqs = ThisWorkbook.Worksheets("Squares")
+    sqs.Cells.Clear
+    sqs.Range("A1:F1").Value = Array("ID", "Aisle", "Zone", "Row", "Col", "Depth")
+    For sd = 1 To 2
+        ' aisles on this side, sorted by Order
+        ReDim idx(1 To na): ni = 0
+        For i = 1 To na
+            If (sd = 1 And aSide(i) = "L") Or (sd = 2 And aSide(i) = "R") Then
+                ni = ni + 1: idx(ni) = i
+            End If
+        Next i
+        For i = 2 To ni
+            t = idx(i): j = i - 1
+            Do While j >= 1
+                If aOrd(idx(j)) <= aOrd(t) Then Exit Do
+                idx(j + 1) = idx(j): j = j - 1
+            Loop
+            idx(j + 1) = t
+        Next i
+
+        cur = gBottom
+        For k = 1 To ni
+            i = idx(k)
+            topR = cur - aRows(i) + 1
+            If sd = 1 Then c0 = gWalkS - aDeep(i): c1 = gWalkS - 1 Else c0 = gRightS: c1 = gRightS + aDeep(i) - 1
+
+            ' label above the aisle
+            Set lbl = Me.Range(Me.Cells(topR - 1, c0), Me.Cells(topR - 1, c1))
+            If c1 > c0 Then lbl.Merge
+            lbl.Font.Name = "Arial": lbl.Font.Size = 11: lbl.Font.Bold = True
+            lbl.HorizontalAlignment = xlLeft
+            lbl.VerticalAlignment = xlBottom
+            If aBlk(i) Then
+                lbl.Cells(1, 1).Value = aId(i) & "   NOT OURS"
+            ElseIf aZone(i) <> "" Then
+                lbl.Cells(1, 1).Formula = "=""" & aId(i) & "   ""&zn_" & aZone(i)
+            Else
+                lbl.Cells(1, 1).Value = aId(i) & "   No zone"
+            End If
+
+            Set rng = Me.Range(Me.Cells(topR, c0), Me.Cells(cur, c1))
+            If aBlk(i) Then
+                ' someone else's space
+                rng.Merge
+                rng.Cells(1, 1).Value = "NOT OURS - someone else's space"
+                rng.Interior.Color = RGB(191, 191, 191)
+                rng.Font.Name = "Arial": rng.Font.Size = 11: rng.Font.Bold = True
+                rng.Font.Color = RGB(128, 128, 128)
+                rng.HorizontalAlignment = xlCenter
+                rng.VerticalAlignment = xlCenter
+            Else
+                zi = ZoneIdx(aZone(i))
+                If zi > 0 Then colour = ZoneColour(aZone(i)) Else colour = RGB(217, 217, 217)
+                ' stripes = free space
+                With rng.Interior
+                    If zi > 0 Then
+                        .Pattern = xlPatternLightUp
+                        .Color = vbWhite
+                        .PatternColor = colour
+                    Else
+                        .Pattern = xlPatternSolid
+                        .Color = colour
+                    End If
+                End With
+                rng.Font.Name = "Arial": rng.Font.Size = 7: rng.Font.Bold = True
+                rng.HorizontalAlignment = xlCenter
+                rng.VerticalAlignment = xlCenter
+                rng.ShrinkToFit = True
+                rng.Borders.LineStyle = xlContinuous
+                rng.Borders.Weight = xlThin
+                rng.Borders.Color = vbWhite
+                ' dropdown of this zone's items
+                With rng.Validation
+                    .Add Type:=xlValidateList, AlertStyle:=xlValidAlertWarning, _
+                         Formula1:="=dd_" & IIf(zi > 0, aZone(i), "ALL")
+                    .IgnoreBlank = True
+                    .InCellDropdown = True
+                    .ErrorTitle = "Not for this zone"
+                    .ErrorMessage = "That item isn't listed for this zone (or isn't on the Stock sheet). Put it here anyway?"
+                    .InputTitle = "Aisle " & aId(i)
+                    .InputMessage = "Click the arrow and pick an item. Press Delete to empty."
+                    .ShowInput = True
+                    .ShowError = True
+                End With
+                ' colours when full (relative formulas follow the active cell)
+                tl = rng.Cells(1, 1).Address(False, False)
+                rng.Cells(1, 1).Select
+                If zi > 0 Then
+                    Set fc = rng.FormatConditions.Add(Type:=xlExpression, Formula1:="=AND(LEN(" & tl & _
+                        ")>0,IFERROR(INDEX(ItemZones,MATCH(" & tl & ",ItemCodes,0)),""" & aZone(i) & """)<>""" & aZone(i) & """)")
+                    fc.Interior.Color = RGB(255, 0, 0)
+                    fc.Font.Color = vbWhite
+                    fc.StopIfTrue = True
+                    zTotal(zi) = zTotal(zi) + aRows(i) * aDeep(i)
+                    zUsed(zi) = zUsed(zi) & "+COUNTA(Map!" & rng.Address & ")"
+                End If
+                Set fc = rng.FormatConditions.Add(Type:=xlExpression, Formula1:="=LEN(" & tl & ")>0")
+                If zi > 0 Then fc.Interior.Color = colour Else fc.Interior.Color = RGB(166, 166, 166)
+                If IsDark(IIf(zi > 0, colour, RGB(166, 166, 166))) Then fc.Font.Color = vbWhite Else fc.Font.Color = vbBlack
+
+                ' the squares themselves (+ put pallets back)
+                For t = 0 To aRows(i) - 1
+                    For d = 1 To aDeep(i)
+                        newN = newN + 1
+                        v = aId(i) & "-" & Format$(d, "00") & "-" & Chr$(65 + t)
+                        If sd = 1 Then j = gWalkS - d Else j = gRightS + d - 1
+                        sqs.Cells(newN + 1, 1).Resize(1, 6).Value = Array(v, aId(i), IIf(zi > 0, aZone(i), ""), topR + t, j, d)
+                        For m = 1 To nk
+                            If Not placed(m) Then
+                                If StrComp(keepId(m), v, vbTextCompare) = 0 Then
+                                    Me.Cells(topR + t, j).Value = keepItem(m)
+                                    placed(m) = True
+                                    Exit For
+                                End If
+                            End If
+                        Next m
+                    Next d
+                Next t
+            End If
+            cur = topR - 2
+        Next k
+    Next sd
+
+    ' ---- 7. legend, free spaces and Stock sheet counts
+    DrawLegend zTotal, zUsed
+    For i = 1 To nk
+        If Not placed(i) Then
+            nLost = nLost + 1
+            If nLost <= 20 Then lost = lost & vbLf & "   " & keepId(i) & ":  " & keepItem(i)
+            LogIt "Removed", keepItem(i), keepId(i), "(no longer on the map)"
+        End If
+    Next i
+
+    Me.PageSetup.PrintArea = Me.Range(Me.Cells(1, 1), Me.Cells(gFire, gLast)).Address
+    sqN = 0                                  ' re-read squares next time
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    Me.Range(Me.Cells(1, 1), Me.Cells(gFire, gLast)).Select
+    ActiveWindow.Zoom = True
+    If ActiveWindow.Zoom > 100 Then ActiveWindow.Zoom = 100
+    Me.Range("A1").Select
+    Application.EnableEvents = True
+    mBusy = False
+    MsgBox "Map rebuilt: " & newN & " squares." & IIf(nLost > 0, vbLf & vbLf & nLost & _
+           " pallet(s) no longer fit (also written on the Moves sheet):" & lost, ""), _
+           IIf(nLost > 0, vbExclamation, vbInformation), "Rebuild map"
+    Exit Sub
+Fail:
+    mBusy = False
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    MsgBox "Rebuild stopped: " & Err.Description, vbExclamation, "Rebuild map"
+End Sub
+
+Private Sub DrawLegend(zTotal() As Long, zUsed() As String)
+    Dim r As Long, z As Long, lc As Long, keys As Variant, k As Long, st As Worksheet, nm As Range
+    lc = gLegend
+    r = TOP_ROW
+    LegBand r, "COLOURS"
+    For z = 1 To zN
+        r = r + 1
+        Me.Cells(r, lc).Interior.Color = ZoneColour(zCode(z))
+        LegText r, "=zn_" & zCode(z)
+    Next z
+    keys = Array("Stripes = free space", "Red = wrong zone, move it", "Grey = not ours")
+    For k = 0 To 2
+        r = r + 1
+        Select Case k
+            Case 0
+                Me.Cells(r, lc).Interior.Pattern = xlPatternLightUp
+                Me.Cells(r, lc).Interior.Color = vbWhite
+                Me.Cells(r, lc).Interior.PatternColor = ZoneColour(zCode(1))
+            Case 1: Me.Cells(r, lc).Interior.Color = RGB(255, 0, 0)
+            Case 2: Me.Cells(r, lc).Interior.Color = RGB(191, 191, 191)
+        End Select
+        LegText r, CStr(keys(k))
+    Next k
+    r = r + 2
+    LegBand r, "FREE SPACES"
+    Set st = ThisWorkbook.Worksheets("Stock")
+    For z = 1 To zN
+        Set nm = ThisWorkbook.Names("zn_" & zCode(z)).RefersToRange
+        If zTotal(z) > 0 Then
+            r = r + 1
+            With Me.Range(Me.Cells(r, lc), Me.Cells(r, lc + 1))
+                .Merge
+                .Cells(1, 1).Formula = "=" & zTotal(z) & "-(" & Mid$(Replace(zUsed(z), "Map!", ""), 2) & ")"
+                .Font.Name = "Arial": .Font.Size = 12: .Font.Bold = True: .Font.Color = RGB(230, 0, 126)
+                .HorizontalAlignment = xlRight
+            End With
+            LegText r, "=zn_" & zCode(z)
+            nm.Offset(0, 1).Value = zTotal(z)
+            nm.Offset(0, 2).Formula = "=" & Mid$(zUsed(z), 2)
+        Else
+            nm.Offset(0, 1).Value = 0
+            nm.Offset(0, 2).Value = 0
+        End If
+        nm.Offset(0, 3).Formula = "=" & nm.Offset(0, 1).Address(False, False) & "-" & nm.Offset(0, 2).Address(False, False)
+    Next z
+    r = r + 2
+    LegBand r, "LOW STOCK"
+    r = r + 1
+    With Me.Range(Me.Cells(r, lc), Me.Cells(r, lc + 1))
+        .Merge
+        .Cells(1, 1).Formula = "=COUNTIF(tblStock[Status],""LOW"")"
+        .Font.Name = "Arial": .Font.Size = 12: .Font.Bold = True: .Font.Color = RGB(192, 0, 0)
+        .HorizontalAlignment = xlRight
+    End With
+    LegText r, "items LOW - see Stock sheet"
+End Sub
+
+Private Sub LegBand(ByVal r As Long, ByVal text As String)
+    With Me.Range(Me.Cells(r, gLegend), Me.Cells(r, gLegend + LEG_COLS - 1))
+        .Merge
+        .Cells(1, 1).Value = text
+        .Font.Name = "Arial": .Font.Size = 11: .Font.Bold = True: .Font.Color = vbWhite
+        .Interior.Color = vbBlack
+        .VerticalAlignment = xlCenter
+        .IndentLevel = 1
+    End With
+End Sub
+
+Private Sub LegText(ByVal r As Long, ByVal text As String)
+    With Me.Range(Me.Cells(r, gLegend + 2), Me.Cells(r, gLegend + LEG_COLS - 1))
+        .Merge
+        If Left$(text, 1) = "=" Then .Cells(1, 1).Formula = text Else .Cells(1, 1).Value = text
+        .Font.Name = "Arial": .Font.Size = 11
+        .VerticalAlignment = xlCenter
+    End With
+End Sub
+
+Private Sub Bar(ByVal r As Long, ByVal text As String, ByVal colour As Long)
+    With Me.Range(Me.Cells(r, 2), Me.Cells(r, gMapLast))
+        .Merge
+        .Cells(1, 1).Value = text
+        .Interior.Color = colour
+        .Font.Name = "Arial": .Font.Size = 12: .Font.Bold = True: .Font.Color = vbWhite
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+End Sub
+
+' Zone codes in the order they appear on the Stock sheet (names zn_CODE)
+Private Sub LoadZones()
+    Dim nm As Name, codes() As String, rows() As Long, i As Long, j As Long, tc As String, tr As Long
+    ReDim codes(1 To ThisWorkbook.Names.Count + 1): ReDim rows(1 To ThisWorkbook.Names.Count + 1)
+    zN = 0
+    For Each nm In ThisWorkbook.Names
+        If LCase$(Left$(nm.Name, 3)) = "zn_" Then
+            zN = zN + 1
+            codes(zN) = Mid$(nm.Name, 4)
+            rows(zN) = nm.RefersToRange.Row
+        End If
+    Next nm
+    For i = 2 To zN
+        tc = codes(i): tr = rows(i): j = i - 1
+        Do While j >= 1
+            If rows(j) <= tr Then Exit Do
+            codes(j + 1) = codes(j): rows(j + 1) = rows(j): j = j - 1
+        Loop
+        codes(j + 1) = tc: rows(j + 1) = tr
+    Next i
+    ReDim zCode(1 To zN + 1)
+    For i = 1 To zN
+        zCode(i) = UCase$(codes(i))
+    Next i
+End Sub
+
+Private Function ZoneIdx(ByVal code As String) As Long
+    Dim i As Long
+    For i = 1 To zN
+        If StrComp(zCode(i), code, vbTextCompare) = 0 Then ZoneIdx = i: Exit Function
+    Next i
+End Function
+
+' Zone colour = the fill of its Code cell on the Stock sheet
+Private Function ZoneColour(ByVal code As String) As Long
+    On Error Resume Next
+    ZoneColour = RGB(217, 217, 217)
+    ZoneColour = ThisWorkbook.Names("zn_" & code).RefersToRange.Offset(0, -1).Interior.Color
+End Function
+
+Private Function IsDark(ByVal c As Long) As Boolean
+    IsDark = (0.299 * (c And &HFF&) + 0.587 * ((c \ &H100&) And &HFF&) + 0.114 * ((c \ &H10000) And &HFF&)) < 140
+End Function
+
+Private Function NameExists(ByVal nm As String) As Boolean
+    Dim x As Name
+    On Error Resume Next
+    Set x = ThisWorkbook.Names(nm)
+    NameExists = Not x Is Nothing
+End Function
+
+Private Function LVal(lo As ListObject, ByVal i As Long, ByVal col As String) As String
+    LVal = SafeText(lo.ListColumns(col).DataBodyRange.Cells(i).Value)
+End Function

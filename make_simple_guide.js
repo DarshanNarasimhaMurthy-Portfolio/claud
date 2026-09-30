@@ -35,7 +35,8 @@ function buttons() {
     ["E6007E", "Find item", "Shows every pallet of an item with a pink border."],
     ["C00000", "Low stock", "Lists everything that's running low."],
     ["404040", "Undo", "Takes back the last change."],
-    ["808080", "Clear", "Removes the pink borders and cancels a move."]];
+    ["808080", "Clear", "Removes the pink borders and cancels a move."],
+    ["0070C0", "Rebuild map", "Redraws the map after you change the Layout sheet."]];
   const cw = [2200, 7438];
   return new Table({ width: { size: W, type: WidthType.DXA }, columnWidths: cw, rows: [
     new TableRow({ children: [new TableCell({ columnSpan: 2, width: { size: W, type: WidthType.DXA }, borders: { top: none, bottom: none, left: none, right: none },
@@ -73,10 +74,12 @@ const doc = new Document({ styles: { default: { document: { run: { font: FONT, s
     gap(),
     box("CHANGE A ZONE NAME?", "404040", ["Go to the **Stock** sheet.", "Type over the name in the **pink box** on the right.", "The Map changes by itself."]),
     gap(),
+    box("CHANGE AISLE SIZES OR ADD AN AISLE?", "0070C0", ["Go to the **Layout** sheet.", "Change **Rows** (how many pallets wide) or **Pallets deep**. For a new aisle, type it on the first empty row.", "Press **Rebuild map**. Pallets already on the map stay where they are."]),
+    gap(),
     box("TURN ON THE MACROS (ONCE)", "000000", [
       "Open **Floor_Map_Simple.xlsx**. Click **File \u2192 Save As** and choose **Excel Macro-Enabled Workbook (.xlsm)**. Use the .xlsm from now on.",
       "Press **Alt + F11**. On the left, double-click the sheet that says **(Map)**.",
-      "Open **Floor_Map_Simple_VBA.txt**. Copy everything **below the line of stars** and paste it in.",
+      "Open **Floor_Map_Simple_VBA.txt**. Copy everything **below the line of stars** and paste it in. (Already pasted an older version? Click in the code, press **Ctrl + A** then **Delete** first.)",
       "Close that window. Click any square on the Map. The **buttons** appear.",
       "Press **Ctrl + S**. Next time, click **Enable Content** if Excel asks."]),
     gap(160),

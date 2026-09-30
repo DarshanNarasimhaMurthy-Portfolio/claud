@@ -64,6 +64,7 @@ def build(cfg, out, demo):
     ws = wb.active
     ws.title = "Map"
     st = wb.create_sheet("Stock")
+    lay = wb.create_sheet("Layout")
     moves = wb.create_sheet("Moves")
     lists = wb.create_sheet("Lists")
     squares = wb.create_sheet("Squares")
@@ -89,7 +90,8 @@ def build(cfg, out, demo):
     st.row_dimensions[2].height = 30
 
     heads = ["Item code", "Description", "Zone", "Low when pallets at or below", "Pallets on map", "Status"]
-    map_rng = f"Map!$A${ROW_AREA_TOP}:${L(geo['map_last_col'])}${geo['bottom']}"
+    # big fixed range so the count still works after "Rebuild map" makes the map bigger
+    map_rng = f"Map!$A${ROW_AREA_TOP}:$DZ$300"
     tr = lambda col: f"tblStock[[#This Row],[{col}]]"
     calc = {
         "Pallets on map": f'IF({tr("Item code")}="","",COUNTIF({map_rng},{tr("Item code")}))',
@@ -354,6 +356,64 @@ def build(cfg, out, demo):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.sheet_view.selection[0].activeCell = "A1"
     ws.sheet_view.selection[0].sqref = "A1"
+
+    # ------------------------------------------------------------ Layout (aisle sizes, used by "Rebuild map")
+    lay.sheet_properties.tabColor = "808080"
+    lay.sheet_view.showGridLines = False
+    lay.merge_cells("A1:G1")
+    lay["A1"].value = "Layout"
+    lay["A1"].font = f(18, True, "FFFFFF")
+    lay["A1"].alignment = Alignment(vertical="center", indent=1)
+    for col in range(1, 8):
+        lay.cell(1, col).fill = solid("000000")
+        lay.cell(1, col).border = Border(bottom=side("thick", s["BrandAccent"]))
+    lay.row_dimensions[1].height = 34
+    lay.merge_cells("A2:G2")
+    lay["A2"].value = ("Change the numbers, then press the REBUILD MAP button. "
+                       "Pallets already on the map stay where they are.")
+    lay["A2"].font = f(12, True, s["BrandAccent"])
+    lay.row_dimensions[2].height = 22
+    lheads = ["Aisle", "Side", "Order from fire exit", "Rows", "Pallets deep", "Zone", "Use"]
+    for j, (h, w) in enumerate(zip(lheads, [10, 10, 12, 10, 12, 10, 12])):
+        cc = lay.cell(5, j + 1, h)
+        cc.font = f(11, True, "FFFFFF")
+        cc.fill = solid("000000")
+        cc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        lay.column_dimensions[L(j + 1)].width = w
+    lay.row_dimensions[5].height = 32
+    for i, a in enumerate(cfg["aisles"]):
+        r = 6 + i
+        use = "Blocked" if blocked(a.get("Active")) else ("Yes" if str(a.get("Active", "Yes")).lower() in ("yes", "y", "true", "1") else "No")
+        vals = [a["AisleID"], a["Side"], int(a["Order"]), int(a["PalletsAcross"]), int(a["PalletsDeep"]),
+                a.get("Zone") or "", use]
+        for j, v in enumerate(vals):
+            cc = lay.cell(r, j + 1, v)
+            cc.font = f(12, j == 0)
+            cc.alignment = Alignment(horizontal="center", vertical="center")
+        lay.row_dimensions[r].height = 22
+    lt = Table(displayName="tblLayout", ref=f"A5:G{5 + len(cfg['aisles'])}")
+    lt.tableStyleInfo = TableStyleInfo(name="TableStyleMedium15", showRowStripes=True)
+    lay.add_table(lt)
+    for formula, rng in (('"Left,Right"', "B6:B60"), ('"Yes,Blocked,No"', "G6:G60"),
+                         (f'"{",".join(z["Code"] for z in zones)}"', "F6:F60")):
+        d = DataValidation(type="list", formula1=formula, allow_blank=True)
+        d.add(rng)
+        lay.add_data_validation(d)
+    d = DataValidation(type="whole", operator="between", formula1="1", formula2="60", allow_blank=False,
+                       showErrorMessage=True, error="Use a whole number from 1 to 60.")
+    d.add("C6:E60")
+    lay.add_data_validation(d)
+    notes = [
+        "Rows = how many pallets wide the aisle is (1 row = 1 line of pallets on the map).",
+        "Pallets deep = how many pallets from the walkway to the wall.",
+        "Side: Left or Right, standing with the fire exit behind you. Order: 1 = nearest the fire exit.",
+        "Use: Yes = ours,  Blocked = someone else's (grey),  No = hide it.",
+        "Zone codes: " + ",  ".join(f"{z['Code']} = {z['Name']}" for z in zones)
+        + "   (rename zones on the Stock sheet).",
+        "New aisle? Type it on the first empty row under the table.",
+    ]
+    for i, t_ in enumerate(notes):
+        lay.cell(7 + len(cfg["aisles"]) + i, 1, t_).font = f(11, color="404040")
 
     # ------------------------------------------------------------ Moves log (written by the macros)
     moves.sheet_properties.tabColor = "808080"
