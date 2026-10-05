@@ -47,6 +47,11 @@ Private gBottom As Long, gWalkS As Long, gWalkE As Long, gRightS As Long
 Private gMapLast As Long, gLegend As Long, gLast As Long, gFire As Long
 Private zCode() As String, zN As Long
 
+' The "Pallets on map" formula on the Stock sheet (counts the whole Map)
+Private Const COUNT_FORMULA As String = _
+    "=IF(TRIM([@[Item code]])="""","""",COUNTIF(Map!$A$6:$ZZ$2000,TRIM([@[Item code]])))"
+Private mStockChecked As Boolean
+
 
 '======================================================================
 '  EVENTS
@@ -607,6 +612,7 @@ End Sub
 ' Draws the five buttons the first time they are needed
 Private Sub EnsureButtons()
     Dim s As Shape, caps As Variant, macs As Variant, cols As Variant, i As Long, x As Double
+    If Not mStockChecked Then CheckStock
     On Error Resume Next
     Set s = Me.Shapes("fmBtn5")
     On Error GoTo 0
@@ -984,6 +990,19 @@ Fail:
            "Fix the Layout sheet and press Rebuild map again.", vbExclamation, "Rebuild map"
 End Sub
 
+' Once per session: if the Stock count formula is old or was changed, fix it
+Private Sub CheckStock()
+    Dim lo As ListObject
+    mStockChecked = True
+    On Error Resume Next
+    Set lo = ThisWorkbook.Worksheets("Stock").ListObjects("tblStock")
+    If lo Is Nothing Then Exit Sub
+    If lo.DataBodyRange Is Nothing Then Exit Sub
+    If InStr(lo.ListColumns("Pallets on map").DataBodyRange.Cells(1, 1).Formula, "$ZZ$2000") = 0 Then
+        RepairStock
+    End If
+End Sub
+
 ' Makes sure every item on the Stock sheet is inside the table and has its
 ' "Pallets on map" and "Status" formulas (fixes items typed under the table)
 Private Sub RepairStock()
@@ -997,8 +1016,7 @@ Private Sub RepairStock()
     If top.Row + lo.ListRows.Count < want Then
         lo.Resize ws.Range(top, ws.Cells(want, top.Column + lo.ListColumns.Count - 1))
     End If
-    lo.ListColumns("Pallets on map").DataBodyRange.Formula = _
-        "=IF(TRIM([@[Item code]])="""","""",COUNTIF(Map!$A$6:$DZ$300,TRIM([@[Item code]])))"
+    lo.ListColumns("Pallets on map").DataBodyRange.Formula = COUNT_FORMULA
     lo.ListColumns("Status").DataBodyRange.Formula = _
         "=IF(TRIM([@[Item code]])="""","""",IF([@[Pallets on map]]<=IF([@[Low when pallets at or below]]="""",2," & _
         "[@[Low when pallets at or below]]),""LOW"",""OK""))"

@@ -91,7 +91,7 @@ def build(cfg, out, demo):
 
     heads = ["Item code", "Description", "Zone", "Low when pallets at or below", "Pallets on map", "Status"]
     # big fixed range so the count still works after "Rebuild map" makes the map bigger
-    map_rng = f"Map!$A${ROW_AREA_TOP}:$DZ$300"
+    map_rng = f"Map!$A${ROW_AREA_TOP}:$ZZ$2000"
     tr = lambda col: f"tblStock[[#This Row],[{col}]]"
     calc = {
         "Pallets on map": f'IF(TRIM({tr("Item code")})="","",COUNTIF({map_rng},TRIM({tr("Item code")})))',
