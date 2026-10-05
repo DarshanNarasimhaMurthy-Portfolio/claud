@@ -52,6 +52,8 @@ Private zCode() As String, zN As Long
 '  EVENTS
 '======================================================================
 Private Sub Worksheet_Activate()
+    ' counts on the Stock sheet only work when Excel calculates by itself
+    If Application.Calculation <> xlCalculationAutomatic Then Application.Calculation = xlCalculationAutomatic
     EnsureButtons
 End Sub
 
@@ -951,6 +953,7 @@ Public Sub RebuildMap()
 
     Me.PageSetup.PrintArea = Me.Range(Me.Cells(1, 1), Me.Cells(gFire, gLast)).Address
     sqN = 0                                  ' re-read squares next time
+    RepairStock
     Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
     Me.Range(Me.Cells(1, 1), Me.Cells(gFire, gLast)).Select
@@ -979,6 +982,26 @@ Fail:
     Application.EnableEvents = True
     MsgBox failMsg & vbLf & vbLf & "Any pallets that were not put back are listed on the Moves sheet. " & _
            "Fix the Layout sheet and press Rebuild map again.", vbExclamation, "Rebuild map"
+End Sub
+
+' Makes sure every item on the Stock sheet is inside the table and has its
+' "Pallets on map" and "Status" formulas (fixes items typed under the table)
+Private Sub RepairStock()
+    Dim ws As Worksheet, lo As ListObject, lastRow As Long, want As Long, top As Range
+    Set ws = ThisWorkbook.Worksheets("Stock")
+    Set lo = ws.ListObjects("tblStock")
+    Set top = lo.HeaderRowRange.Cells(1, 1)
+    lastRow = ws.Cells(ws.Rows.Count, top.Column).End(xlUp).Row
+    want = top.Row + 150
+    If lastRow > want Then want = lastRow
+    If top.Row + lo.ListRows.Count < want Then
+        lo.Resize ws.Range(top, ws.Cells(want, top.Column + lo.ListColumns.Count - 1))
+    End If
+    lo.ListColumns("Pallets on map").DataBodyRange.Formula = _
+        "=IF(TRIM([@[Item code]])="""","""",COUNTIF(Map!$A$6:$DZ$300,TRIM([@[Item code]])))"
+    lo.ListColumns("Status").DataBodyRange.Formula = _
+        "=IF(TRIM([@[Item code]])="""","""",IF([@[Pallets on map]]<=IF([@[Low when pallets at or below]]="""",2," & _
+        "[@[Low when pallets at or below]]),""LOW"",""OK""))"
 End Sub
 
 Private Sub DrawLegend(zTotal() As Long, zUsed() As String)

@@ -28,7 +28,7 @@ MAP_HELP = ("PUT AWAY: click a square \u2192 arrow \u2192 pick.     MOVE: double
             "then click where it goes.     REMOVE: click it, press Delete.")
 CELL_PX = 28          # big squares, easy to click
 DD_ROWS = 150         # max items per dropdown list
-STOCK_ROWS_HINT = 2   # example rows
+STOCK_ROWS = 150      # rows ready in the Stock table
 
 
 def stripes(colour):
@@ -94,8 +94,8 @@ def build(cfg, out, demo):
     map_rng = f"Map!$A${ROW_AREA_TOP}:$DZ$300"
     tr = lambda col: f"tblStock[[#This Row],[{col}]]"
     calc = {
-        "Pallets on map": f'IF({tr("Item code")}="","",COUNTIF({map_rng},{tr("Item code")}))',
-        "Status": f'IF({tr("Item code")}="","",IF({tr("Pallets on map")}<='
+        "Pallets on map": f'IF(TRIM({tr("Item code")})="","",COUNTIF({map_rng},TRIM({tr("Item code")})))',
+        "Status": f'IF(TRIM({tr("Item code")})="","",IF({tr("Pallets on map")}<='
                   f'IF({tr("Low when pallets at or below")}="",{int(s["DefaultLowStock"])},'
                   f'{tr("Low when pallets at or below")}),"LOW","OK"))',
     }
@@ -106,7 +106,10 @@ def build(cfg, out, demo):
         cc.fill = solid("000000" if h not in calc else "404040")
         cc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     st.row_dimensions[hr].height = 36
-    n = len(items)
+    # table comes ready-made with STOCK_ROWS rows (formulas filled in), so new
+    # items work even when Excel doesn't grow tables automatically
+    n = max(STOCK_ROWS, len(items))
+    items = items + [{}] * (n - len(items))
     for i, it in enumerate(items):
         r = hr + 1 + i
         for j, h in enumerate(heads):
