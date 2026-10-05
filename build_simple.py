@@ -267,7 +267,7 @@ def build(cfg, out, demo):
             type="list", formula1=f"dd_{zone}" if colour else "dd_ALL", allow_blank=True,
             showErrorMessage=True, errorStyle="warning", errorTitle="Not for this zone",
             error="That item isn't listed for this zone (or isn't on the Stock sheet). Put it here anyway?",
-            showInputMessage=True, promptTitle=f"Aisle {aisle}  ({zone or 'no zone'})",
+            showInputMessage=True, promptTitle=f"Aisle {aisle}  ({zone or 'no zone'})"[:32],
             prompt="Click the arrow and pick an item. Press Delete to empty.")
         dvz.add(rng)
         ws.add_data_validation(dvz)

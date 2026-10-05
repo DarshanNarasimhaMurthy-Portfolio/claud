@@ -672,6 +672,7 @@ Public Sub RebuildMap()
     Dim keepId() As String, keepItem() As String, nk As Long, placed() As Boolean, v As String
     Dim newN As Long, sqs As Worksheet, lost As String, nLost As Long, zi As Long
     Dim zTotal() As Long, zUsed() As String, colour As Long, fc As FormatCondition, m As Long
+    Dim curAisle As String
 
     If MsgBox("Redraw the Map from the Layout sheet?" & vbLf & vbLf & _
               "Pallets stay where they are. Any that no longer fit will be listed.", _
@@ -837,6 +838,7 @@ Public Sub RebuildMap()
         cur = gBottom
         For k = 1 To ni
             i = idx(k)
+            curAisle = aId(i)
             topR = cur - aRows(i) + 1
             If sd = 1 Then c0 = gWalkS - aDeep(i): c1 = gWalkS - 1 Else c0 = gRightS: c1 = gRightS + aDeep(i) - 1
 
@@ -849,7 +851,7 @@ Public Sub RebuildMap()
             If aBlk(i) Then
                 lbl.Cells(1, 1).Value = aId(i) & "   NOT OURS"
             ElseIf aZone(i) <> "" Then
-                lbl.Cells(1, 1).Formula = "=""" & aId(i) & "   ""&zn_" & aZone(i)
+                lbl.Cells(1, 1).Formula = "=""" & Replace(aId(i), """", """""") & "   ""&zn_" & aZone(i)
             Else
                 lbl.Cells(1, 1).Value = aId(i) & "   No zone"
             End If
@@ -893,7 +895,7 @@ Public Sub RebuildMap()
                     .InCellDropdown = True
                     .ErrorTitle = "Not for this zone"
                     .ErrorMessage = "That item isn't listed for this zone (or isn't on the Stock sheet). Put it here anyway?"
-                    .InputTitle = "Aisle " & aId(i)
+                    .InputTitle = Left$("Aisle " & aId(i), 32)      ' Excel allows 32 characters here
                     .InputMessage = "Click the arrow and pick an item. Press Delete to empty."
                     .ShowInput = True
                     .ShowError = True
@@ -962,11 +964,21 @@ Public Sub RebuildMap()
            IIf(nLost > 0, vbExclamation, vbInformation), "Rebuild map"
     Exit Sub
 Fail:
+    Dim failMsg As String
+    failMsg = "Rebuild stopped" & IIf(curAisle <> "", " while drawing aisle '" & curAisle & "'", "") & _
+              ":" & vbLf & Err.Description
+    On Error Resume Next
+    ' Nothing is lost: pallets not yet put back are written on the Moves sheet
+    For m = 1 To nk
+        If Not placed(m) Then LogIt "Not redrawn", keepItem(m), keepId(m), "(rebuild stopped - put back by hand)"
+    Next m
+    sqN = 0
     mBusy = False
     Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
     Application.EnableEvents = True
-    MsgBox "Rebuild stopped: " & Err.Description, vbExclamation, "Rebuild map"
+    MsgBox failMsg & vbLf & vbLf & "Any pallets that were not put back are listed on the Moves sheet. " & _
+           "Fix the Layout sheet and press Rebuild map again.", vbExclamation, "Rebuild map"
 End Sub
 
 Private Sub DrawLegend(zTotal() As Long, zUsed() As String)
